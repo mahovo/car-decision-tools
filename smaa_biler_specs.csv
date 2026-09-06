@@ -1,0 +1,14 @@
+parameter,kategori,retning,enhed,Kia_Picanto,Dacia_Sandero,Fiat_Grande_Panda,Citroen_C3,Toyota_AygoX,MG3,Suzuki_Swift,Fiat_600,Skoda_Fabia,Renault_Clio,Toyota_Yaris,VW_Polo
+Pris,oekonomi,lav,kr,169900,169990,169990,179990,199990,214999,219990,219990,219995,224900,233990,248995
+Maerke,info,lav,navn,Kia,Dacia,Fiat,Citroën,Toyota,MG,Suzuki,Fiat,Skoda,Renault,Toyota,VW
+Doere,info,hoej,antal,5,5,5,5,5,5,5,5,5,5,5,5
+Forbrug,oekonomi,hoej,km/l,19.8,17.5,19.6,22.0,26.0,22.7,20.5,20.8,17.9,25.6,26.3,18.5
+Bagagerum,info,hoej,liter,255,328,361,310,231,293,265,360,380,391,270,351
+Effekt_hk,info,hoej,hk,63,90,110,100,116,194,82,100,110,160,116,95
+Garanti_bil_aar,driftsikkerhed,hoej,aar,7,3,8,8,10,7,3,8,2,2,10,2
+Garanti_km,info,hoej,km,150000,100000,160000,160000,185000,150000,100000,160000,ubegrænset,ubegrænset,185000,ubegrænset
+NCAP_stjerner,personsikkerhed,hoej,stjerner,3,2,NA,NA,4,4,3,NA,5,4,5,5
+NCAP_adult,info,hoej,pct,79,70,NA,NA,78,74,67,NA,85,79,86,94
+NCAP_child,info,hoej,pct,64,72,NA,NA,78,73,65,NA,81,82,81,80
+NCAP_vru,info,hoej,pct,54,41,NA,NA,74,81,76,NA,70,80,78,70
+NCAP_safety_assist,info,hoej,pct,25,42,NA,NA,81,69,62,NA,71,73,85,70

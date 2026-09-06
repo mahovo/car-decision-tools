@@ -1,0 +1,30 @@
+year,series,basis,dkk,source
+2020,petrol,street,14.29,tankstation.nu annual average
+2021,petrol,street,13.69,tankstation.nu annual average
+2022,petrol,street,13.89,tankstation.nu annual average
+2023,petrol,street,14.18,tankstation.nu annual average
+2024,petrol,street,14.12,tankstation.nu annual average
+2025,petrol,street,13.77,tankstation.nu annual average
+2026,petrol,street,15.53,tankstation.nu average to September
+2020,diesel,street,13.59,tankstation.nu annual average
+2021,diesel,street,12.59,tankstation.nu annual average
+2022,diesel,street,12.69,tankstation.nu annual average
+2023,diesel,street,12.82,tankstation.nu annual average
+2024,diesel,street,12.54,tankstation.nu annual average
+2025,diesel,street,13.00,tankstation.nu annual average
+2026,diesel,street,16.99,tankstation.nu average to September
+2015,petrol,list,11.52,OK prisudvikling annual average
+2016,petrol,list,10.91,OK prisudvikling annual average
+2020,petrol,list,11.19,OK prisudvikling annual average
+2021,petrol,list,14.00,OK prisudvikling October level
+2025,petrol,list,15.09,benzinsignal.dk August level
+2026,petrol,list,17.91,benzinsignal.dk September list price
+2026,diesel,list,18.41,benzinsignal.dk September list price
+2019,electricity,household,1.76,Forsyningstilsynet 5000-14900 kWh band incl. all taxes
+2020,electricity,household,1.57,Forsyningstilsynet 5000-14900 kWh band incl. all taxes
+2021,electricity,household,1.59,Forsyningstilsynet 5000-14900 kWh band incl. all taxes
+2022,electricity,household,3.17,Forsyningstilsynet 5000-14900 kWh band incl. all taxes
+2023,electricity,household,2.35,Forsyningstilsynet 5000-14900 kWh band incl. all taxes
+2024,electricity,household,2.06,Forsyningstilsynet 5000-14900 kWh band incl. all taxes
+2025,electricity,household,1.89,Forsyningstilsynet 5000-14900 kWh band incl. all taxes
+2026,electricity,household,1.74,elberegner.dk January-June 2026 average

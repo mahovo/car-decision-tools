@@ -1,0 +1,34 @@
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+
+Copyright (c) 2026 Martin Hoshi Vognsen
+
+The written analyses in this repository — the .Rmd sources, their rendered HTML
+output, the README files, and the derived datasets listed below — are licensed
+under the Creative Commons Attribution 4.0 International License.
+
+    https://creativecommons.org/licenses/by/4.0/
+
+You are free to share and adapt this material for any purpose, including
+commercially, provided you give appropriate credit, link to the licence, and
+indicate if changes were made.
+
+Covered derived datasets:
+
+    depreciation/depreciation_by_brand.csv
+    depreciation/solterra_bz4x_data.csv
+    depreciation_by_fueltype.csv
+    fuel-cost/mileage_elasticity.csv
+    fuel-cost/comparator-listings.csv
+    fuel-cost/fuel-cost-cars.csv
+    fuel-cost/energy-price-history.csv
+    fuel-cost/periodic-tax-rates.csv
+    leasing_vs_kontant_input.csv
+    smaa_biler_specs.csv, smaa_biler_vaegte.csv
+    smaa_elbiler_specs.csv, smaa_elbiler_vaegte.csv
+    store_biler_specs.csv, store_biler_vaegte.csv
+
+The source code (the .R and .py files) is licensed separately under the MIT
+Licence; see LICENSE.
+
+See NOTICE for the provenance of the derived datasets and for the limits of
+what is being licensed here.

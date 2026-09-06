@@ -1,0 +1,350 @@
+---
+title: "Små biler — vægtet pointmodel"
+subtitle: "Billige, fabriksnye automatgear-biler"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+---
+
+```{css, echo=FALSE}
+/* wide tables (many cars) scroll horizontally instead of overflowing */
+.main-container { max-width: 1200px; }
+table.compare { display: block; overflow-x: auto; white-space: nowrap;
+                border-collapse: collapse; }
+table.compare th, table.compare td { padding: 4px 10px; border-bottom: 1px solid #ddd;
+                text-align: right; }
+table.compare th:first-child, table.compare td:first-child { text-align: left;
+                position: sticky; left: 0; background: #fff; font-weight: 600; }
+table.compare thead th { border-bottom: 2px solid #999; }
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.align = "center")
+# keep Danish characters (æ, ø, å) intact when rendering
+suppressWarnings(Sys.setlocale("LC_CTYPE", "en_US.UTF-8"))
+SPECS  <- "smaa_biler_specs.csv"
+VAEGTE <- "smaa_biler_vaegte.csv"
+FUELGROUP <- "benzin"   # værditab-opslag: "benzin" eller "el"
+
+# Danish number formatting; NA -> em dash
+fmt <- function(x) {
+  vapply(x, function(v) {
+    if (is.na(v)) return("&mdash;")
+    if (v == round(v)) formatC(v, format = "d", big.mark = ".")
+    else formatC(v, format = "f", digits = 1, big.mark = ".", decimal.mark = ",")
+  }, character(1))
+}
+# render a data.frame as a horizontally scrollable HTML table
+scroll_table <- function(df) {
+  knitr::kable(df, format = "html", row.names = FALSE,
+               table.attr = 'class="compare"', escape = FALSE)
+}
+```
+
+## Sådan virker modellen
+
+Dette er **søster-rapporten** til sammenligningen af de store (el)biler — samme
+vægtede pointmodel, men et andet felt og andre prioriteter.
+
+**Felt:** små, *fabriksnye* biler, der kan fås med *automatgear* og har en *billig
+anskaffelse* (A/B-segment, benzin/hybrid). Ingen krav om elbil.
+
+**Prioriteter** (kun tre, vægt 3 → 1):
+
+1. **Samlet økonomi** (vægt 3)
+2. **Driftsikkerhed** (vægt 2)
+3. **Personsikkerhed** (vægt 1)
+
+Modellens mekanik:
+
+1. **Data** ligger i `r SPECS` — én række pr. parameter, én kolonne pr. bil.
+   Tilføj en bil = tilføj en kolonne; tilføj en parameter = tilføj en række.
+2. Hver parameter har en **`kategori`** (én af de tre prioriteter, eller `info` =
+   vises men tæller ikke med) og en **`retning`** (`hoej` = højere er bedst,
+   `lav` = lavere er bedst).
+3. **Normalisering pr. parameter (ratio-skala).** Den bedste bil får 1,0 og de
+   øvrige proportionalt: for `hoej` er score $x/\max(x)$, for `lav` er
+   $\min(x)/x$. Marginens størrelse bevares.
+4. **Robust over for huller.** En parameter scorer, så længe mindst to biler har
+   data; hver bils slutindeks normaliseres med vægten af de kategorier, bilen
+   *har* data for.
+5. **Kategoriscore** = gennemsnit af parameter-scorerne. **Slutindeks** = vægtet
+   gennemsnit (vægte i `r VAEGTE`), skaleret 0–100.
+
+```{r load}
+specs <- read.csv(SPECS, stringsAsFactors = FALSE, fileEncoding = "UTF-8",
+                  check.names = FALSE)
+w     <- read.csv(VAEGTE, stringsAsFactors = FALSE, fileEncoding = "UTF-8")
+
+meta <- c("parameter", "kategori", "retning", "enhed")
+cars <- setdiff(names(specs), meta)
+
+valmat <- sapply(cars, function(c) suppressWarnings(as.numeric(specs[[c]])))
+rownames(valmat) <- specs$parameter
+```
+
+```{r tco}
+# --- Totaløkonomi (TCO): fold fueltype-specifik værditab ind i økonomi ---
+# Værditab-rater fra depreciation_by_fueltype.csv (genereret af
+# depreciation_by_fueltype.R; analyze_depreciation.Rmd røres ikke).
+HOLD <- 4; KM_TOTAL <- 60000          # ejerperiode 4 år, 15.000 km/år
+BENZIN_KR_L <- 13.5; EL_KR_KWH <- 2.75
+dep <- read.csv("depreciation_by_fueltype.csv", stringsAsFactors = FALSE,
+                fileEncoding = "UTF-8")
+dep <- dep[dep$grp == FUELGROUP, ]
+maerke  <- as.character(unlist(specs[specs$parameter == "Maerke", cars]))
+deprate <- setNames(dep$dep_adj_shrunk_pct[match(maerke, dep$brand)], cars)  # %/år
+
+price_row <- intersect(c("Pris", "Basispris"), rownames(valmat))[1]
+vaerditab <- round(valmat[price_row, ] * (1 - (1 - deprate / 100)^HOLD))
+
+fuel_row <- intersect(c("Forbrug", "Energiforbrug"), rownames(valmat))[1]
+if (FUELGROUP == "benzin") {
+  drift <- round(KM_TOTAL / valmat[fuel_row, ] * BENZIN_KR_L)
+} else {
+  whkm  <- if (!is.na(fuel_row)) valmat[fuel_row, ]
+           else valmat["Batteri_kWh", ] * 1000 / valmat["Raekkevidde", ]
+  drift <- round(KM_TOTAL * whkm / 1000 * EL_KR_KWH)
+}
+if (!is.na(fuel_row)) specs$kategori[specs$parameter == fuel_row] <- "info"
+
+addrow <- function(name, kat, ret, enhed, vals) {
+  i <- nrow(specs) + 1; specs[i, ] <<- NA
+  specs$parameter[i] <<- name; specs$kategori[i] <<- kat
+  specs$retning[i]   <<- ret;  specs$enhed[i] <<- enhed
+  for (c in cars) specs[i, c] <<- as.character(vals[[c]])
+}
+addrow("Vaerditab_pct_aar", "info",     "lav", "pct", deprate)
+addrow("Vaerditab_4aar",    "oekonomi", "lav", "kr",  vaerditab)
+addrow("Drift_4aar",        "oekonomi", "lav", "kr",  drift)
+valmat <- sapply(cars, function(c) suppressWarnings(as.numeric(specs[[c]])))
+rownames(valmat) <- specs$parameter
+```
+
+## Specifikationer (rådata)
+
+Vandret scroll viser alle biler. `—` = ukendt/ikke udfyldt.
+
+```{r spectable, results='asis'}
+disp <- data.frame(Parameter = specs$parameter, Enhed = specs$enhed,
+                   check.names = FALSE, stringsAsFactors = FALSE)
+# numbers formatted; free text (e.g. "ubegrænset") shown as-is; blanks as dash
+cell <- function(s) {
+  if (is.na(s) || s == "NA" || s == "") return("&mdash;")
+  n <- suppressWarnings(as.numeric(s))
+  if (is.na(n)) return(s)
+  fmt(n)
+}
+for (c in cars) disp[[c]] <- vapply(as.character(specs[[c]]), cell, character(1))
+disp$Kategori <- specs$kategori
+scroll_table(disp)
+```
+
+```{r scoring}
+# ratio normalisation across cars that have a value; NA stays NA
+norm_row <- function(x, dir) {
+  ok <- !is.na(x)
+  out <- rep(NA_real_, length(x))
+  if (sum(ok) < 2) return(out)          # need >=2 cars to compare
+  if (dir == "hoej") { m <- max(x[ok]);  if (m == 0) return(out); out[ok] <- x[ok] / m }
+  else               { mn <- min(x[ok]); if (any(x[ok] == 0)) return(out); out[ok] <- mn / x[ok] }
+  out
+}
+
+scored <- which(specs$kategori != "info" & specs$retning %in% c("hoej", "lav"))
+scoremat <- t(vapply(scored,
+                     function(i) norm_row(valmat[i, ], specs$retning[i]),
+                     numeric(length(cars))))
+rownames(scoremat) <- specs$parameter[scored]
+colnames(scoremat) <- cars
+
+keeprow  <- rowSums(!is.na(scoremat)) >= 2
+scoremat <- scoremat[keeprow, , drop = FALSE]
+sc_kat   <- specs$kategori[scored][keeprow]
+dropped  <- specs$parameter[scored][!keeprow]
+
+# category score per car = mean of mapped parameter scores (NA-aware)
+cats   <- w$kategori
+catmat <- matrix(NA_real_, nrow = length(cats), ncol = length(cars),
+                 dimnames = list(cats, cars))
+for (k in seq_along(cats)) {
+  rows_k <- which(vapply(strsplit(sc_kat, ";"),
+                         function(v) cats[k] %in% trimws(v), logical(1)))
+  if (length(rows_k) == 0) next
+  catmat[k, ] <- apply(scoremat[rows_k, , drop = FALSE], 2,
+                       function(col) if (all(is.na(col))) NA_real_ else mean(col, na.rm = TRUE))
+}
+
+present <- which(rowSums(!is.na(catmat)) > 0)
+
+# per-car weighted index, renormalised by the weight of categories the car has
+index <- vapply(seq_along(cars), function(j) {
+  v <- catmat[present, j]; ww <- w$vaegt[present]; keep <- !is.na(v)
+  if (!any(keep)) return(NA_real_)
+  100 * sum(v[keep] * ww[keep]) / sum(ww[keep])
+}, numeric(1))
+names(index) <- cars
+```
+
+## Prioriteter og vægte
+
+```{r weights, results='asis'}
+wt <- w[order(w$prioritet), ]
+wt$bruges <- ifelse(wt$kategori %in% w$kategori[present], "ja", "&mdash;")
+wt <- data.frame(Prioritet = wt$prioritet, Kategori = wt$label,
+                 Vægt = wt$vaegt, `Har data` = wt$bruges, check.names = FALSE)
+scroll_table(wt)
+```
+
+`r if (length(dropped)) sprintf("Udeladt (under to biler har værdi): **%s**.", paste(dropped, collapse=", "))`
+
+## Kategoriscorer (0–100)
+
+Hvor godt hver bil klarer hver prioritet, før vægtning.
+
+```{r cattable, results='asis'}
+catpct <- catmat[present, , drop = FALSE]
+catdf  <- data.frame(Kategori = w$label[present], Vægt = w$vaegt[present],
+                     check.names = FALSE, stringsAsFactors = FALSE)
+for (c in cars) catdf[[c]] <- fmt(round(100 * catpct[, c]))
+scroll_table(catdf)
+```
+
+## Slutresultat
+
+```{r ranking, results='asis'}
+# data coverage: how many of the weighted categories each car is scored on
+daekning <- colSums(!is.na(catmat[present, , drop = FALSE]))
+# mark cars without Euro NCAP with a footnote symbol (same test as the footnote)
+ncap_vals <- suppressWarnings(as.numeric(as.character(
+  unlist(specs[specs$parameter == "NCAP_stjerner", cars]))))
+mark <- ifelse(is.na(ncap_vals), "<sup>†</sup>", "")
+rank_df <- data.frame(Bil = paste0(cars, mark), Indeks = index,
+                      Daekning = sprintf("%d/%d", daekning, length(present)),
+                      stringsAsFactors = FALSE)
+rank_df <- rank_df[order(-rank_df$Indeks), ]
+rank_df <- data.frame(Placering = seq_len(nrow(rank_df)), Bil = rank_df$Bil,
+                      Indeks = fmt(round(rank_df$Indeks, 1)),
+                      `Datadækning` = rank_df$Daekning, check.names = FALSE)
+scroll_table(rank_df)
+```
+
+*Datadækning* = antal vægtede kategorier bilen har data for (her højst 3).
+
+```{r ncap-note, results='asis'}
+nostar <- cars[is.na(ncap_vals)]
+if (length(nostar))
+  cat(sprintf(paste0("† **Fodnote (Euro NCAP):** %s er endnu ikke Euro NCAP-",
+    "testede og scorer derfor *ikke* på personsikkerhed (datadækning 2/3). ",
+    "Da manglende data ikke straffes, løfter det dem relativt i indekset — ",
+    "de kan falde, når testresultater foreligger.\n"),
+    paste(gsub("_", " ", nostar), collapse = ", ")))
+```
+
+```{r barplot, fig.width=9, fig.height=6}
+o  <- order(index)
+op <- par(mar = c(4, 13, 2, 2))
+bp <- barplot(index[o], names.arg = cars[o], horiz = TRUE, las = 1,
+              col = "darkseagreen4", xlim = c(0, 100), cex.names = 0.85,
+              xlab = "Vægtet indeks (0–100)", main = "Sammenligning af små biler")
+text(index[o], bp, labels = round(index[o], 1), pos = 4, xpd = NA, cex = 0.8)
+par(op)
+```
+
+## Hvem vinder hver kategori
+
+```{r winners, results='asis'}
+winner <- apply(catmat[present, , drop = FALSE], 1, function(r)
+  if (all(is.na(r))) "&mdash;" else paste(cars[which(r == max(r, na.rm = TRUE))], collapse = ", "))
+win_df <- data.frame(Kategori = w$label[present], Vægt = w$vaegt[present],
+                     Vinder = winner, check.names = FALSE)
+scroll_table(win_df)
+```
+
+## Sådan opdaterer du
+
+- **Ny værdi:** ret tallet i `r SPECS` og knit igen.
+- **Ny bil:** tilføj en kolonne i `r SPECS` med bilens navn og værdier.
+- **Ny parameter:** tilføj en række; sæt `kategori` (eller `info`) og `retning`.
+- **Anden vægtning:** ret `vaegt` i `r VAEGTE`.
+
+Knit fra R: `rmarkdown::render("smaa_biler.Rmd")`.
+
+## Datagrundlag og forbehold
+
+**Krav til feltet:** alle biler er fabriksnye, fås med automatgear, har **5 døre**
+og er billige i anskaffelse (A/B-segment). Ingen krav om elbil — feltet er
+benzin/hybrid. (Kravene om *varmepumpe* og *forkonditionering af batteri* gælder
+kun elbiler og indgår derfor i søster-rapporten `smaa_elbiler`, ikke her.)
+
+**Scorede parametre:** *Økonomi* = **totaløkonomi (TCO)** med tre lige-vægtede
+lav-parametre: anskaffelsespris + 4-års værditab (kr) + 4-års brændstof (kr).
+*Driftsikkerhed* = nybilsgaranti i år (høj). *Personsikkerhed* = Euro NCAP-stjerner
+(høj). Øvrige rækker (forbrug km/l, bagagerum, NCAP-delscorer, effekt, garanti-km,
+mærke, værditab-%) er `info`.
+
+**Værditab (TCO).** `Vaerditab_4aar = Pris × (1−(1−r)⁴)`, hvor `r` er mærkets
+**benzin/hybrid-specifikke, mileage-justerede** afskrivning/år fra
+`depreciation_by_fueltype.csv` (genereret af `depreciation_by_fueltype.R` fra
+bilbasen-data — `analyze_depreciation.Rmd` er urørt). Raterne er empirisk-Bayes-
+krympet efter regressionens standardfejl. Brændstof = 60.000 km ÷ (km/l) × 13,5 kr/l.
+Antagelser (4 år, 15.000 km/år, brændstofpris) ændres i `tco`-chunken. Fueltype-
+splittet ændrer billedet vs. den samlede afskrivning (fx Kia: 8,8 % på benzin mod
+15 % samlet, fordi Kias elbiler trak gennemsnittet op). **MG** mangler brugtmarked
+→ værditab `—` (scorer kun på pris+brændstof).
+
+**Valgte modeller** (billigste automatvariant — CVT/AMT/DSG/e-CVT): Kia Picanto ·
+Dacia Sandero · Fiat Grande Panda Hybrid · Citroën C3 Hybrid · Toyota Aygo X Hybrid ·
+MG3 Hybrid+ · Suzuki Swift · Fiat 600 Hybrid · Škoda Fabia · Renault Clio E-Tech ·
+Toyota Yaris Hybrid · VW Polo.
+
+**Ændringer ved opdateringen (august 2026):**
+
+| Ændring | Bil | Årsag |
+| :-- | :-- | :-- |
+| **Fjernet** | Hyundai i10 | Udgået — kan ikke købes fabriksny i DK (Hyundai DK: *tidligere modeller*) |
+| **Fjernet** | Hyundai i20 | Udsolgt/udgået hos Hyundai DK |
+| **Fjernet** | Peugeot 208 | Benzinversionen er udsolgt i Danmark |
+| **Tilføjet** | Fiat Grande Panda Hybrid | Ny billig 5-dørs hybrid med eDCT-6 automat, 169.990 kr. |
+| **Ny generation** | Renault Clio | Clio VI (2026): 160 hk E-Tech, 3,9 l/100 km ≈ 25,6 km/l — markant bedre end forgængeren |
+| **Ny drivline** | Toyota Aygo X | Nu Hybrid (116 hk, ~26 km/l) — samme drivline som Yaris |
+| **Pris op** | Toyota Yaris | 214.990 → 233.990 kr. |
+
+**Bemærk om mikrobil-segmentet:** Hyundai i10 og Kia Picanto er begge udgået;
+**Toyota Aygo X er den eneste tilbageværende benzin-mikrobil** på det danske
+marked. Picanto er beholdt i tabellen, fordi den fortsat kan *bestilles*
+fabriksny (3–4 måneders leveringstid), men den er ved vejs ende.
+
+**Kilder.** Priser, forbrug og garanti er danske vejledende 2026-tal fra
+importør-/forhandlersider og fagmedier; NCAP fra [Euro NCAP](https://www.euroncap.com).
+
+**Forbehold:**
+
+- Priser er **startpriser for billigste automatgear-variant** — verificér i
+  konfiguratoren. Hvor en model kun fås med manuel i basis, er prisen for
+  nærmeste automat-/DSG-/CVT-variant brugt.
+- **Garanti** = den maksimale dækning, bilen kan opnå *uden tilkøb*. Da vi under
+  alle omstændigheder overholder serviceintervallerne, skelnes der **ikke** mellem
+  service-aktiveret og service-uafhængig garanti — begge tæller fuldt: Toyota Relax
+  10 år/185.000 km, Stellantis (Citroën/Peugeot/Fiat) 8 år/160.000 km, Kia/MG
+  7 år/150.000 km. Kun forlængelser der koster ekstra, tæller ikke med: fx
+  **VW Polo** og **Renault Clio** (benzin) har 2 år, da de gratis 5-års-programmer
+  hos VW/Renault/Škoda kun dækker elbiler. Garanti-km er kun info (ikke scoret),
+  da flere har ubegrænset km.
+- **NCAP** (stjerner + delscorer adult/child/VRU/safety-assist) stammer fra
+  forskellige testår og -protokoller; ældre 5★ er ikke direkte sammenlignelige med
+  nye. Kia Picanto er 2017-tal (**udløbet** rating); MG3's 4★ fulgte en sjælden
+  sædelås-fejl, som MG har udbedret via tilbagekald. Citroën C3, Fiat 600 og Fiat
+  Grande Panda er ikke Euro NCAP-testede → `—` (se fodnoten ved slutresultatet).
+- **Bagagerum** er fabrikstal (VDA, bagsæder oppe); enkelte (Swift, MG3, Fiat 600,
+  C3, Grande Panda) er ca.-tal.
+- **Data der bør efterprøves hos forhandler/producent:** forbruget for Fiat Grande
+  Panda Hybrid er et estimat (~19,6 km/l); Renault Clio VI's NCAP-stjerner er
+  udledt af delscorerne (79/82/80/73) og bør verificeres; Škoda Fabias
+  DSG-startpris varierer mellem prislisterne (194.995–245.000 kr. afhængigt af
+  variant). Priserne i dette segment ændrer sig hurtigt.
+```

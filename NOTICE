@@ -1,0 +1,61 @@
+NOTICE
+======
+
+Provenance of the derived datasets
+----------------------------------
+
+Several CSV files in this repository are statistics computed from used-car
+adverts published on bilbasen.dk, observed between June and September 2026 by
+`depreciation/scrape_bilbasen.py`.
+
+The underlying corpus of adverts is NOT distributed with this repository, and
+should not be added to it. It is a database in which bilbasen.dk holds rights,
+including the sui generis database right under Directive 96/9/EC (in Denmark,
+ophavsretsloven § 71); extracting or re-utilising a substantial part of it is
+reserved to the rightsholder. What is published here instead:
+
+  * per-brand and per-fuel-type depreciation rates, mileage elasticities, and
+    fitted comparator prices — statistics about the market, not a copy of it;
+
+  * two small extracts kept as audit trails for specific case studies
+    (`depreciation/solterra_bz4x_data.csv`, ~100 rows;
+    `fuel-cost/comparator-listings.csv`, ~140 rows), with the columns that
+    point at an individual advert or locate its seller removed, and
+    private-seller rows dropped.
+
+The CC BY 4.0 licence in LICENSE-CONTENT is granted over this project's own
+selection, computation and presentation. It does not and cannot grant any right
+in bilbasen.dk's underlying data. If you intend to reuse these figures at scale
+or commercially, satisfy yourself independently on that point.
+
+Prices, taxes and specifications
+--------------------------------
+
+Figures quoted from manufacturers, dealers, Skatteforvaltningen,
+Motorstyrelsen, Forsyningstilsynet and public price comparison sites are
+reproduced as factual data for analysis, with the retrieval date given at the
+point of use. Trade marks and model names are the property of their respective
+owners and are used descriptively.
+
+One service tariff is sourced from a written quote issued by an authorised
+Subaru workshop in Denmark on 3 September 2026. The workshop is not named and
+the quote document is not reproduced: it was issued to an individual rather than
+published as a tariff, and the document itself carries vehicle identifiers. Only
+the two price figures it establishes are used.
+
+No advice
+---------
+
+Nothing here is financial, tax or legal advice. The analyses are one person's
+working notes about one purchase decision in Denmark in 2026, with their
+assumptions stated so that a reader can disagree with them. Several of the most
+load-bearing numbers are explicitly labelled as estimates in the notes
+themselves. Check anything you intend to rely on.
+
+Affiliation
+-----------
+
+This project is not affiliated with, endorsed by, or sponsored by Anthropic,
+bilbasen.dk, or any vehicle manufacturer or dealer named in the analyses.
+"Claude" and "Claude Code" are trade marks of Anthropic; they are used here only
+to describe how the work was produced.

@@ -1,0 +1,9 @@
+kategori,label,prioritet,vaegt
+driftsikkerhed,Driftsikkerhed,1,8
+personsikkerhed,Personsikkerhed,2,7
+foere_sne,Dårligt føre/sne,3,6
+oekonomi,Samlet økonomi,4,5
+rummelig,Rummelig,5,4
+komfort,Komfort (for- og bagsæder),6,3
+forhandler,Forhandler+service i nærområdet,7,2
+fartbump,Fartbump+rundkørsel,8,1

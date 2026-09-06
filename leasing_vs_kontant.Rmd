@@ -1,0 +1,1407 @@
+---
+title: "Leasing vs. kontant- og lånefinansieret køb — totaløkonomi"
+subtitle: "TCO pr. år med alternativomkostning, holdeperiode og ekstra-km"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+---
+
+```{css, echo=FALSE}
+.main-container { max-width: 1200px; }
+table.compare { display: block; overflow-x: auto; white-space: nowrap;
+                border-collapse: collapse; }
+table.compare th, table.compare td { padding: 4px 10px; border-bottom: 1px solid #ddd;
+                text-align: right; }
+table.compare th:first-child, table.compare td:first-child { text-align: left;
+                position: sticky; left: 0; background: #fff; font-weight: 600; }
+table.compare thead th { border-bottom: 2px solid #999; }
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.align = "center"
+)
+suppressWarnings(Sys.setlocale("LC_CTYPE", "en_US.UTF-8"))
+suppressPackageStartupMessages(library(kableExtra))
+
+INPUT <- "leasing_vs_kontant_input.csv"
+FUELGROUP <- "el"
+
+## ===== KONTROLPANEL: alle antagelser ét sted ==============================
+KM_AAR <- 20000 # årlig kørsel (km)
+EL_KR_KWH <- 2.75 # elpris (kr/kWh)
+INFLATION <- 0.02 # årlig inflation (generel prisstigning)
+LEASE_PERIODE_MDR <- 48 # længde pr. leasingkontrakt (mdr)
+LEASE_CYCLES <- 2 # på hinanden følgende leasingaftaler (basis-scenarie)
+H <- LEASE_PERIODE_MDR * LEASE_CYCLES / 12 # basis-ejerperiode (år) = 8
+
+# Alternativafkast (opportunity cost) — EFTER skat
+RENTE_RISIKOFRI <- 0.025 # risikofri rente, nominel før skat
+AFKAST_RISIKO <- 0.070 # forventet risikobehæftet afkast, nominel før skat
+SKAT_RENTE <- 0.37 # kapitalindkomstskat på renteafkast
+SKAT_AKTIE <- 0.27 # aktieindkomstskat (under progressionsgrænsen)
+k_rf <- RENTE_RISIKOFRI * (1 - SKAT_RENTE) # ~1,6 %
+k_risk <- AFKAST_RISIKO * (1 - SKAT_AKTIE) # ~5,1 %
+
+# Lånefinansieret køb (globale vilkår; kontantkøb = 0 % lån)
+LAAN_RENTE <- 0.055 # billån, nominel rente/år
+LAAN_UDB_PCT <- 0.20 # udbetaling som andel af kontantpris
+LAAN_LOBETID <- 7 # løbetid (år)
+LAAN_RENTEFRADRAG <- 0.33 # skatteværdi af rentefradrag
+
+# Reparationer efter garantiudløb (rammer kun eje; leasing er altid ny/under garanti)
+# Kalibreret til elbil: lav rutineservice, men risikopræmie for dyre HV-/elektronik-
+# reparationer efter garanti (FDM: ~10k/år for ældre bil; elbil 20-40 % billigere service)
+REPAIR_POSTGAR <- 4000 # ekstra reparation/år, 1. år uden for garanti
+REPAIR_VAEKST <- 0.13 # årlig stigning i post-garanti reparationer
+
+# Værditabskurve: stejlt første år (registreringsafgift/moms/nybilspræmie fordamper),
+# derefter brugtmarkedets rate. Forhandler/leasingselskab køber under listepris.
+MED_AFSKRIVNING <- TRUE # medregn værditab? FALSE = fuld restværdi (nedre grænse for eje)
+DEP_AAR1 <- 0.20 # samlet værditab 1. år (kilder: 15-25 %)
+FORHANDLER_RABAT <- 0.15 # leasingselskabets indkøbspris under kontantpris (flåderabat)
+## ==========================================================================
+
+# Farver pr. finansieringsform (bruges i alle plots).
+COL <- c(kontant = "steelblue", laan = "seagreen", leasing = "darkorange")
+
+# Dansk talformat (tusind ".", decimal ","); heltal uden decimaler; NA -> tankestreg.
+fmt <- function(x) {
+  vapply(x, function(v) {
+    if (is.na(v)) {
+      return("&mdash;")
+    }
+    if (v == round(v)) {
+      formatC(v, format = "d", big.mark = ".")
+    } else {
+      formatC(v, format = "f", digits = 1, big.mark = ".", decimal.mark = ",")
+    }
+  }, character(1))
+}
+# Formatér en procentsats med ét decimal og dansk komma; NA -> tankestreg.
+pct <- function(x) {
+  ifelse(is.na(x), "&mdash;",
+    paste0(sub("\\.", ",", sprintf("%.1f", x)), " %")
+  )
+}
+# Render en data.frame som en vandret-scrollbar HTML-tabel (CSS-klasse "compare").
+scroll_table <- function(df) {
+  knitr::kable(df,
+    format = "html", row.names = FALSE,
+    table.attr = 'class="compare"', escape = FALSE
+  )
+}
+```
+
+```{r load}
+# ---- Indlæs bildata ------------------------------------------------------
+# Hver række i CSV'en er en parameter (fx "Kontantpris"); hver kolonne er en bil.
+bil_data <- read.csv(
+  INPUT,
+  stringsAsFactors = FALSE, fileEncoding = "UTF-8", check.names = FALSE
+)
+meta_kolonner <- c("parameter", "kategori", "retning", "enhed")
+biler <- setdiff(names(bil_data), meta_kolonner) # bilernes kolonnenavne
+
+# Hent én parameter-række som navngiven vektor (én værdi pr. bil).
+laes_tal <- function(parameter) {
+  celler <- unlist(bil_data[bil_data$parameter == parameter, biler])
+  setNames(suppressWarnings(as.numeric(celler)), biler)
+}
+laes_tekst <- function(parameter) {
+  celler <- unlist(bil_data[bil_data$parameter == parameter, biler])
+  setNames(as.character(celler), biler)
+}
+
+# ---- Grunddata pr. bil (navnene matcher CSV-parametrene) -----------------
+kontantpris <- laes_tal("Kontantpris")
+batteri_kwh <- laes_tal("Batteri_kWh")
+raekkevidde <- laes_tal("Raekkevidde")
+maerke <- laes_tekst("Maerke")
+
+# Leasingkontraktens vilkår pr. bil
+leasing_maaned <- laes_tal("Leasing_maaned") # månedlig ydelse
+leasing_foerstegangsydelse <- laes_tal("Leasing_foerstegangsydelse")
+leasing_periode_mdr <- laes_tal("Leasing_periode_mdr") # kontraktlængde
+leasing_inkl_km <- laes_tal("Leasing_inkl_km_aar") # inkluderede km/år
+leasing_ekstra_km <- laes_tal("Leasing_ekstra_km") # kr pr. overkørt km
+leasing_oprettelse <- laes_tal("Leasing_oprettelse")
+leasing_aflevering <- laes_tal("Leasing_aflevering") # gebyr ved kontraktslut
+leasing_inkl_service <- laes_tal("Leasing_inkl_service") # 1 = inkl., 0 = ej
+leasing_inkl_ejerafgift <- laes_tal("Leasing_inkl_ejerafgift")
+leasing_inkl_forsikring <- laes_tal("Leasing_inkl_forsikring")
+
+# Årlige driftsomkostninger pr. bil
+ejerafgift <- laes_tal("Ejerafgift_aar")
+forsikring <- laes_tal("Forsikring_aar")
+service_lille <- laes_tal("Service_lille") # pris, lille eftersyn
+service_stor <- laes_tal("Service_stor") # pris, stort eftersyn
+service_interval_km <- laes_tal("Service_interval_km") # km mellem eftersyn
+service_transport <- laes_tal("Service_transport") # ekstra transport pr. besøg
+service_kilde <- laes_tekst("Service_kilde") # "sourced" eller "skøn"
+daek <- laes_tal("Daek_aar")
+garanti_aar <- laes_tal("Garanti_aar") # års fabriksgaranti
+
+# Energiforbrug (Wh/km) afledt af batteri/rækkevidde -> årlig elomkostning.
+forbrug_wh_km <- batteri_kwh * 1000 / raekkevidde
+energiomkostning <- function(km_pr_aar = KM_AAR) {
+  km_pr_aar * forbrug_wh_km / 1000 * EL_KR_KWH
+}
+
+# ---- Afskrivningsrate pr. bil --------------------------------------------
+# Mærke- og el-specifik årlig værditabsrate fra den empiriske brugtbilsmodel.
+afskrivning_tabel <- read.csv(
+  "depreciation_by_fueltype.csv",
+  stringsAsFactors = FALSE, fileEncoding = "UTF-8"
+)
+afskrivning_tabel <- afskrivning_tabel[afskrivning_tabel$grp == FUELGROUP, ]
+
+# Gruppens prior: præcisionsvægtet middelhældning og spredningen MELLEM mærker
+# (begge på log-skala). Et mærke helt uden el-data har posterior = prior, altså
+# netop gruppemidlen — det er den principielle værdi, ikke et frit skøn.
+afskr_mu <- afskrivning_tabel$mu_grp[1]
+afskr_tau <- afskrivning_tabel$tau_grp[1]
+GRUPPEMIDDEL <- 1 - exp(afskr_mu) # gruppens afskrivning som årlig rate
+
+# Hældning og dens posterior-usikkerhed pr. bil; NA (intet el-data) → gruppens prior.
+raekke_i_tabel <- match(maerke, afskrivning_tabel$brand)
+afskrivning_b <- setNames(afskrivning_tabel$b_shrunk[raekke_i_tabel], biler)
+afskrivning_sd <- setNames(afskrivning_tabel$sd_shrunk[raekke_i_tabel], biler)
+afskrivning_b[is.na(afskrivning_b)] <- afskr_mu
+afskrivning_sd[is.na(afskrivning_sd)] <- afskr_tau
+
+# Valgfri manuel override pr. bil (tom celle = brug estimatet ovenfor).
+afskrivning_manuel <- laes_tal("Afskrivning_manuel") / 100
+har_manuel <- !is.na(afskrivning_manuel)
+afskrivning_b[har_manuel] <- log(1 - afskrivning_manuel[har_manuel])
+
+afskrivning <- 1 - exp(afskrivning_b) # den rate modellen regner med
+# 95 %-interval, transformeret fra log-skalaen (monotont aftagende i b).
+afskrivning_lo <- 1 - exp(afskrivning_b + 1.96 * afskrivning_sd)
+afskrivning_hi <- 1 - exp(afskrivning_b - 1.96 * afskrivning_sd)
+```
+
+```{r engine}
+## ===== Pengestrømsmotor ===================================================
+# Modellen bygger en årlig pengestrøm for hver finansieringsform, diskonterer den
+# til nutidsværdi og omregner til en ækvivalent årlig omkostning (TCO pr. år).
+#
+# Konvention: positive beløb er omkostninger (udbetalinger); restværdien ved salg
+# er en negativ omkostning. I strøm-vektoren er element 1 = i dag (tidspunkt 0) og
+# element (aar + 1) = slutningen af år `aar`.
+#
+# Funktionerne tager én bil ad gangen (`bil` = bilens kolonnenavn) og valgfrit en
+# holdeperiode og årlig kørsel, så vi kan lave følsomhedsanalyser (sweeps).
+
+# Bilens værdi (kr) efter et antal år: stejlt fald 1. år (DEP_AAR1 — registrerings-
+# afgift, moms og nybilspræmie fordamper), derefter brugtmarkedets årlige rate.
+# Håndterer kontinuert `aar` (til break-even) og en valgfri afskrivningsrate.
+bilvaerdi <- function(bil, aar, afskrivningsrate = afskrivning[bil]) {
+  # afskrivning slået fra → bilen beholder fuld værdi (restværdi = kontantpris)
+  if (!MED_AFSKRIVNING) {
+    return(rep(unname(kontantpris[bil]), length(aar)))
+  }
+  foersteaars_fald <- max(DEP_AAR1, afskrivningsrate)
+  ifelse(
+    aar <= 1,
+    kontantpris[bil] * (1 - foersteaars_fald)^aar,
+    kontantpris[bil] * (1 - foersteaars_fald) * (1 - afskrivningsrate)^(aar - 1)
+  )
+}
+
+# PLANLAGT service er KM-drevet, ikke tidsdrevet: der er eftersyn hver
+# `service_interval_km`, og de veksler mellem et lille og et stort — så den
+# forventede pris pr. besøg er middelværdien af de to (plus evt. transport til
+# værkstedet). Kører man dobbelt så langt, kommer man til service dobbelt så tit.
+serviceomkostning <- function(bil, km_pr_aar) {
+  besoeg_pr_aar <- km_pr_aar / service_interval_km[bil]
+  pris_pr_besoeg <- (service_lille[bil] + service_stor[bil]) / 2 +
+    service_transport[bil]
+  besoeg_pr_aar * pris_pr_besoeg
+}
+
+# Årligt vedligehold (kr) = planlagt service (km-drevet, ovenfor) plus UPLANLAGTE
+# reparationer, der først rammer efter fabriksgarantien og vokser med alderen.
+# Opdelingen er bevidst: service er en kendt, prissat ydelse; reparationer er den
+# usikre restpost (se følsomhedsafsnittet).
+vedligehold <- function(bil, aar, km_pr_aar) {
+  reparation <- if (aar > garanti_aar[bil]) {
+    aar_efter_garanti <- aar - garanti_aar[bil] - 1
+    REPAIR_POSTGAR * (1 + REPAIR_VAEKST)^aar_efter_garanti
+  } else {
+    0
+  }
+  serviceomkostning(bil, km_pr_aar) + reparation
+}
+
+# Samlet årlig driftsomkostning for en ejer i DAGENS priser (fælles for kontant- og
+# lånekøb). Inflationen lægges på i pengestrøms-funktionerne, ikke her.
+aarlig_drift <- function(bil, aar, km_pr_aar) {
+  ejerafgift[bil] + forsikring[bil] + daek[bil] +
+    energiomkostning(km_pr_aar)[bil] + vedligehold(bil, aar, km_pr_aar)
+}
+
+# KONTANTKØB: hele prisen betales i dag, drift løber årligt, og restværdien modtages
+# ved salg efter `holdeperiode` år.
+pengestroem_kontant <- function(bil,
+                                afskrivningsrate = afskrivning[bil],
+                                holdeperiode = H,
+                                km_pr_aar = KM_AAR) {
+  stroem <- numeric(holdeperiode + 1)
+  stroem[1] <- kontantpris[bil] # køb i dag
+  for (aar in 1:holdeperiode) {
+    # driftsomkostninger inflateres til årets nominelle niveau
+    stroem[aar + 1] <- stroem[aar + 1] +
+      aarlig_drift(bil, aar, km_pr_aar) * (1 + INFLATION)^(aar - 1)
+  }
+  # restværdien modtages (negativ omkostning) ved salg
+  stroem[holdeperiode + 1] <- stroem[holdeperiode + 1] -
+    bilvaerdi(bil, holdeperiode, afskrivningsrate)
+  stroem
+}
+
+# LÅNEFINANSIERET KØB: udbetaling i dag, resten som annuitetslån (med rentefradrag),
+# drift årligt, restværdi ved salg. Restgæld ud over holdeperioden indfries ved salg.
+pengestroem_laan <- function(bil,
+                             afskrivningsrate = afskrivning[bil],
+                             holdeperiode = H,
+                             km_pr_aar = KM_AAR) {
+  udbetaling <- kontantpris[bil] * LAAN_UDB_PCT
+  laanebeloeb <- kontantpris[bil] - udbetaling
+  aarlig_ydelse <- if (LAAN_RENTE < 1e-9) {
+    laanebeloeb / LAAN_LOBETID
+  } else {
+    laanebeloeb * LAAN_RENTE / (1 - (1 + LAAN_RENTE)^(-LAAN_LOBETID))
+  }
+
+  stroem <- numeric(holdeperiode + 1)
+  stroem[1] <- udbetaling
+  restgaeld <- laanebeloeb
+  for (aar in 1:holdeperiode) {
+    if (aar <= LAAN_LOBETID && restgaeld > 1e-6) {
+      rente_i_aar <- restgaeld * LAAN_RENTE
+      afdrag_i_aar <- min(aarlig_ydelse - rente_i_aar, restgaeld)
+      # rentefradraget reducerer den effektive renteudgift
+      stroem[aar + 1] <- stroem[aar + 1] +
+        rente_i_aar + afdrag_i_aar - rente_i_aar * LAAN_RENTEFRADRAG
+      restgaeld <- restgaeld - afdrag_i_aar
+    }
+    # låneydelsen er fast nominel (inflation eroderer dens realværdi); drift inflateres
+    stroem[aar + 1] <- stroem[aar + 1] +
+      aarlig_drift(bil, aar, km_pr_aar) * (1 + INFLATION)^(aar - 1)
+  }
+  if (restgaeld > 1e-6) { # indfri evt. restgæld ved salg
+    stroem[holdeperiode + 1] <- stroem[holdeperiode + 1] + restgaeld
+  }
+  stroem[holdeperiode + 1] <- stroem[holdeperiode + 1] -
+    bilvaerdi(bil, holdeperiode, afskrivningsrate)
+  stroem
+}
+
+# Årlig drift som LEASINGTAGEREN selv betaler — dvs. kun det, kontrakten IKKE
+# inkluderer (energi og dæk altid; ejerafgift/forsikring/service afhænger af
+# kontrakten), plus evt. overkørte km.
+aarlig_drift_leasing <- function(bil, aar, km_pr_aar) {
+  overkoerte_km <- max(0, km_pr_aar - leasing_inkl_km[bil]) * leasing_ekstra_km[bil]
+  ejerafgift_del <- if (leasing_inkl_ejerafgift[bil] == 0) ejerafgift[bil] else 0
+  forsikring_del <- if (leasing_inkl_forsikring[bil] == 0) forsikring[bil] else 0
+  service_del <- if (leasing_inkl_service[bil] == 0) {
+    serviceomkostning(bil, km_pr_aar)
+  } else {
+    0
+  }
+  energiomkostning(km_pr_aar)[bil] + overkoerte_km + daek[bil] +
+    ejerafgift_del + forsikring_del + service_del
+}
+
+# Nutidsværdi (NPV): diskontér en pengestrøm til i dag med en årlig rente.
+nutidsvaerdi <- function(stroem, rente) {
+  aar <- 0:(length(stroem) - 1)
+  sum(stroem / (1 + rente)^aar)
+}
+
+# Ækvivalent årlig omkostning (EAC): omregn en nutidsværdi til et lige stort årligt
+# beløb over `antal_aar` (annuitetsformlen) — gør forskellige tidshorisonter
+# sammenlignelige pr. år.
+annuiser <- function(nutidsvaerdi, rente, antal_aar) {
+  if (abs(rente) < 1e-9) {
+    nutidsvaerdi / antal_aar
+  } else {
+    nutidsvaerdi * rente / (1 - (1 + rente)^(-antal_aar))
+  }
+}
+
+# LEASING-pengestrøm over holdeperioden. Betalinger inden for én kontrakt er faste
+# nominelt; hver NY kontrakt (gen-leasing) prissættes til det inflaterede niveau. Hver
+# cyklus er en ny bil (service-alderen nulstilles). Holdeperioden rundes op til hele
+# kontrakter — man kan ikke lease en halv kontrakt.
+pengestroem_leasing <- function(bil, holdeperiode = H, km_pr_aar = KM_AAR) {
+  cyklus_aar <- unname(leasing_periode_mdr[bil] / 12)
+  antal_cykler <- ceiling(holdeperiode / cyklus_aar)
+  aar_i_alt <- antal_cykler * cyklus_aar
+  stroem <- numeric(aar_i_alt + 1)
+  for (cyklus in seq_len(antal_cykler) - 1) { # cyklus = 0, 1, 2, ...
+    start <- cyklus * cyklus_aar
+    prisniveau <- (1 + INFLATION)^start # nyt kontraktprisniveau
+    stroem[start + 1] <- stroem[start + 1] +
+      (leasing_foerstegangsydelse[bil] + leasing_oprettelse[bil]) * prisniveau
+    for (aar in seq_len(cyklus_aar)) {
+      stroem[start + aar + 1] <- stroem[start + aar + 1] +
+        12 * leasing_maaned[bil] * prisniveau
+    }
+    stroem[start + cyklus_aar + 1] <- stroem[start + cyklus_aar + 1] +
+      leasing_aflevering[bil] * prisniveau
+  }
+  # leasingtagerens egen drift hvert år (inflateret som ejerens driftsomkostninger)
+  for (aar in seq_len(aar_i_alt)) {
+    stroem[aar + 1] <- stroem[aar + 1] +
+      aarlig_drift_leasing(bil, aar, km_pr_aar) * (1 + INFLATION)^(aar - 1)
+  }
+  stroem
+}
+
+# TCO pr. år (den centrale beslutningsvariabel) for hver finansieringsform:
+# nutidsværdien af pengestrømmen omregnet til en ækvivalent årlig omkostning.
+tco_kontant <- function(bil,
+                        rente,
+                        afskrivningsrate = afskrivning[bil],
+                        holdeperiode = H,
+                        km_pr_aar = KM_AAR) {
+  stroem <- pengestroem_kontant(bil, afskrivningsrate, holdeperiode, km_pr_aar)
+  annuiser(nutidsvaerdi(stroem, rente), rente, holdeperiode)
+}
+tco_laan <- function(bil,
+                     rente,
+                     afskrivningsrate = afskrivning[bil],
+                     holdeperiode = H,
+                     km_pr_aar = KM_AAR) {
+  stroem <- pengestroem_laan(bil, afskrivningsrate, holdeperiode, km_pr_aar)
+  annuiser(nutidsvaerdi(stroem, rente), rente, holdeperiode)
+}
+# TCO/år for leasing: nutidsværdi af leasing-pengestrømmen over holdeperioden (rundet
+# op til hele kontrakter), annuiseret. Stiger svagt med holdeperioden pga. inflation.
+tco_leasing <- function(bil, rente, holdeperiode = H, km_pr_aar = KM_AAR) {
+  cyklus_aar <- unname(leasing_periode_mdr[bil] / 12)
+  aar_i_alt <- ceiling(holdeperiode / cyklus_aar) * cyklus_aar
+  stroem <- pengestroem_leasing(bil, holdeperiode, km_pr_aar)
+  annuiser(nutidsvaerdi(stroem, rente), rente, aar_i_alt)
+}
+
+# Direkte leasingomkostning i ét bestemt år (nominelt, kun kontraktbetalinger — ikke
+# den drift, man betaler uanset ejerform). Førstegangsydelse ved hver cyklusstart,
+# afleveringsgebyr ved hver cyklusslut.
+leasing_direkte_aar <- function(bil, aar) {
+  cyklus_aar <- leasing_periode_mdr[bil] / 12
+  overkoerte_km <- max(0, KM_AAR - leasing_inkl_km[bil]) * leasing_ekstra_km[bil]
+  beloeb <- 12 * leasing_maaned[bil] + overkoerte_km
+  if ((aar - 1) %% cyklus_aar == 0) {
+    beloeb <- beloeb + leasing_foerstegangsydelse[bil] + leasing_oprettelse[bil]
+  }
+  if (aar %% cyklus_aar == 0) beloeb <- beloeb + leasing_aflevering[bil]
+  beloeb
+}
+# Kumuleret direkte leasingbetaling over en holdeperiode.
+leasing_direkte_kumuleret <- function(bil, holdeperiode) {
+  aarlige <- vapply(
+    1:holdeperiode, function(aar) leasing_direkte_aar(bil, aar), numeric(1)
+  )
+  sum(aarlige)
+}
+
+## ===== Basis-scenarier (holdeperiode H = 8 år) ============================
+# To rentescenarier (efter skat): risikofri og risikobehæftet alternativafkast.
+scenarier <- c(risikofri = k_rf, risiko = k_risk)
+
+# For hvert scenarie: TCO/år for hver bil og hver finansieringsform.
+resultat <- lapply(scenarier, function(rente) {
+  list(
+    rente = rente,
+    kontant = sapply(biler, tco_kontant, rente = rente),
+    laan = sapply(biler, tco_laan, rente = rente),
+    leasing = sapply(biler, tco_leasing, rente = rente)
+  )
+})
+
+# Break-even-afkast: den alternativrente hvor leasing = kontant pr. år. Over dette
+# afkast er leasing billigst. Findes numerisk som roden i differensen.
+breakeven_afkast <- sapply(biler, function(bil) {
+  differens <- function(rente) {
+    tco_leasing(bil, rente) - tco_kontant(bil, rente)
+  }
+  tryCatch(uniroot(differens, c(-0.02, 0.60))$root, error = function(e) NA_real_)
+})
+
+# Restværdi og samlet værditab over basis-holdeperioden.
+restvaerdi <- sapply(biler, function(bil) bilvaerdi(bil, H))
+vaerditab <- kontantpris - restvaerdi
+
+# Konstant årlig direkte leasingomkostning (steady-state) og leasingfaktoren
+# (= direkte leasing pr. år ÷ kontantpris).
+leasing_direkte_aarlig <- sapply(biler, function(bil) {
+  cyklus_aar <- leasing_periode_mdr[bil] / 12
+  overkoerte_km <- max(0, KM_AAR - leasing_inkl_km[bil]) * leasing_ekstra_km[bil]
+  total <- leasing_foerstegangsydelse[bil] + leasing_oprettelse[bil] +
+    leasing_aflevering[bil] +
+    12 * leasing_maaned[bil] * cyklus_aar +
+    overkoerte_km * cyklus_aar
+  unname(total / cyklus_aar)
+})
+leasingfaktor <- leasing_direkte_aarlig / kontantpris
+
+# Break-even for VÆRDITAB (en anden linse end TCO): året hvor kumuleret leasing-
+# betaling overstiger ejerens akkumulerede værditab.
+breakeven_vaerditab <- sapply(biler, function(bil) {
+  differens <- function(aar) {
+    (kontantpris[bil] - bilvaerdi(bil, aar)) - leasing_direkte_aarlig[bil] * aar
+  }
+  tryCatch(uniroot(differens, c(0.2, 40))$root, error = function(e) NA_real_)
+})
+```
+
+## Idéen
+
+Vi sammenligner tre måder at få en fabriksny elbil på, målt som **totale
+ejeromkostninger pr. år (TCO)**:
+
+* **Kontantkøb** — hele prisen betales nu; du bærer værditabet, men får restværdien.
+* **Lånefinansieret køb** — `r pct(LAAN_UDB_PCT*100)` udbetaling, resten lånt
+  (`r pct(LAAN_RENTE*100)` rente, `r LAAN_LOBETID` år, rentefradrag
+  `r pct(LAAN_RENTEFRADRAG*100)`). Du binder mindre kapital, men betaler rente.
+* **Privatleasing** — kontraktfast pris, ingen restværdirisiko, men du ejer intet.
+
+Det centrale er **alternativomkostningen**: kapital bundet i bilen kunne have været
+investeret. Vi diskonterer derfor alle betalinger med renten `k` (som *er*
+alternativomkostningen) og omregner til en **ækvivalent årlig omkostning (EAC)**. To
+scenarier, efter skat: **risikofri `r pct(k_rf*100)`** og **risikobehæftet
+`r pct(k_risk*100)`**.
+
+Alle beløb er **nominelle** med `r pct(INFLATION*100)` inflation. Vi diskonterer med det
+nominelle *afkast* (`k`), ikke med inflationen — det svarer matematisk til en
+realrente-beregning (se metoden nederst). De reale renter — for risikofri **negativ** —
+står i antagelserne.
+
+## Antagelser og parametre
+
+```{r assumptions, results='asis'}
+# Antagelsestabel: parameter + værdi (formateret til visning).
+antagelser <- data.frame(
+  Parameter = c(
+    "Ejerperiode (eje) / leasing", "Årlig kørsel", "Elpris",
+    "Inflation (real afkast e. skat)",
+    "Risikofri rente (før → efter skat)", "Risikobehæftet afkast (før → efter skat)",
+    "Billån (udbetaling / rente / løbetid)", "Rentefradrag (skatteværdi)",
+    "Reparation efter garanti (start / vækst)",
+    "Service (interval / pris pr. besøg)",
+    "Værditab 1. år (klip) / brugtmarked",
+    "Leasingselskabets indkøbsrabat",
+    "Afskrivning (til/fra)", "Restværdi (leasing)"
+  ),
+  Antagelse = c(
+    sprintf(
+      "eje %g år; leasing annuiseret pr. kontrakt (%s mdr)", H,
+      paste(sort(unique(leasing_periode_mdr), decreasing = TRUE), collapse = "/")
+    ),
+    sprintf("%s km", fmt(KM_AAR)),
+    sprintf("%s kr/kWh", sub("\\.", ",", as.character(EL_KR_KWH))),
+    sprintf(
+      "%s (real: risikofri %s, risiko %s)", pct(INFLATION * 100),
+      pct(((1 + k_rf) / (1 + INFLATION) - 1) * 100),
+      pct(((1 + k_risk) / (1 + INFLATION) - 1) * 100)
+    ),
+    sprintf("%s → %s", pct(RENTE_RISIKOFRI * 100), pct(k_rf * 100)),
+    sprintf("%s → %s", pct(AFKAST_RISIKO * 100), pct(k_risk * 100)),
+    sprintf("%s / %s / %g år", pct(LAAN_UDB_PCT * 100), pct(LAAN_RENTE * 100), LAAN_LOBETID),
+    pct(LAAN_RENTEFRADRAG * 100),
+    sprintf(
+      "%s kr/år / %s (garanti: %s)", fmt(REPAIR_POSTGAR), pct(REPAIR_VAEKST * 100),
+      paste(sprintf("%s %g år", gsub("_", " ", biler), garanti_aar), collapse = ", ")
+    ),
+    sprintf(
+      "hver %s–%s km; %s–%s kr/besøg (Toyota og Subaru sourcede, resten skøn)",
+      fmt(min(service_interval_km)), fmt(max(service_interval_km)),
+      fmt(round(min((service_lille + service_stor) / 2 + service_transport))),
+      fmt(round(max((service_lille + service_stor) / 2 + service_transport)))
+    ),
+    sprintf("%s (1. år) → derefter brugtmarkedets rate", pct(DEP_AAR1 * 100)),
+    sprintf("%s under kontantpris", pct(FORHANDLER_RABAT * 100)),
+    if (MED_AFSKRIVNING) {
+      "<b>Til</b> — mærke-/el-specifik; manuel hvor data mangler (Subaru est. 14 %)"
+    } else {
+      "<b>Fra</b> — restværdi = fuld kontantpris (nedre grænse for eje)"
+    },
+    "leasingselskabets risiko — påvirker ikke leasingprisen"
+  ),
+  check.names = FALSE
+)
+scroll_table(antagelser)
+```
+
+Rå input-parametre pr. bil (rediger i `r INPUT`):
+
+```{r inputtable, results='asis'}
+# Rå input pr. bil: formatér hver celle (tal på dansk, fri tekst som-is, tomt -> streg).
+visning <- data.frame(
+  Parameter = bil_data$parameter, Enhed = bil_data$enhed,
+  check.names = FALSE, stringsAsFactors = FALSE
+)
+formater_celle <- function(streng) {
+  if (is.na(streng) || streng == "NA" || streng == "") {
+    return("&mdash;")
+  }
+  tal <- suppressWarnings(as.numeric(streng))
+  if (is.na(tal)) {
+    return(streng) # fri tekst (fx "ubegrænset")
+  }
+  fmt(tal)
+}
+for (bil in biler) {
+  visning[[bil]] <- vapply(as.character(bil_data[[bil]]), formater_celle, character(1))
+}
+visning$Kategori <- bil_data$kategori
+scroll_table(visning)
+```
+
+## Resultat: TCO pr. år
+
+`r pct(LAAN_UDB_PCT*100)`-lånet ligger mellem kontant og leasing på bunden kapital.
+**Leasingfaktor** = årlig direkte leasingomkostning ÷ kontantpris. **Forskel** er
+positiv, når en løsning er dyrere end kontantkøb. **Break-even** er det
+alternativafkast, hvor leasing = kontant.
+
+`r if (MED_AFSKRIVNING) "*(Afskrivning er slået til — kan slås fra i kontrolpanelet med MED_AFSKRIVNING <- FALSE.)*" else "**⚠️ Afskrivning er slået FRA:** restværdi = fuld kontantpris, så alle eje-tal (kontant/lån) er en *nedre grænse* — den reelle omkostning er højere, jo mere bilen falder i værdi. Leasing er upåvirket."`
+
+```{r resulttable, results='asis'}
+# Byg resultattabellen række for række. Hver "række" er en data.frame med bilerne
+# som kolonner; sektionsoverskrifter markeres via attributten "er_sektion".
+lav_raekke <- function(label, vaerdier, er_sektion = FALSE) {
+  raekke <- data.frame(
+    Parameter = label, check.names = FALSE, stringsAsFactors = FALSE
+  )
+  for (bil in biler) raekke[[bil]] <- if (er_sektion) "" else vaerdier[[bil]]
+  attr(raekke, "er_sektion") <- er_sektion
+  raekke
+}
+sektionsraekke <- function(label) lav_raekke(label, NULL, er_sektion = TRUE)
+
+# De fem TCO-rækker for ét rentescenarie.
+scenarie_blok <- function(scenarie_res) {
+  list(
+    lav_raekke("TCO/år, kontant (kr)", fmt(round(scenarie_res$kontant))),
+    lav_raekke("TCO/år, lånekøb (kr)", fmt(round(scenarie_res$laan))),
+    lav_raekke("TCO/år, leasing (kr)", fmt(round(scenarie_res$leasing))),
+    lav_raekke(
+      "Forskel/år (leasing − kontant)",
+      fmt(round(scenarie_res$leasing - scenarie_res$kontant))
+    ),
+    lav_raekke(
+      "Forskel/år (lån − kontant)",
+      fmt(round(scenarie_res$laan - scenarie_res$kontant))
+    )
+  )
+}
+
+raekker <- c(
+  list(
+    lav_raekke("Kontantpris (kr)", fmt(kontantpris)),
+    lav_raekke("Afskrivning (%/år, empirisk)", pct(afskrivning * 100)),
+    lav_raekke("— 95 %-interval", setNames(
+      sprintf("%s–%s", pct(afskrivning_lo * 100), pct(afskrivning_hi * 100)), biler
+    )),
+    lav_raekke(sprintf("Restværdi efter %g år (kr)", H), fmt(round(restvaerdi))),
+    lav_raekke("Værditab i alt (kr)", fmt(round(vaerditab))),
+    lav_raekke("Leasingfaktor (direkte/år ÷ pris)", pct(leasingfaktor * 100)),
+    sektionsraekke(sprintf("Scenarie 1 — risikofri %s efter skat", pct(k_rf * 100)))
+  ),
+  scenarie_blok(resultat$risikofri),
+  list(sektionsraekke(
+    sprintf("Scenarie 2 — risikobehæftet %s efter skat", pct(k_risk * 100))
+  )),
+  scenarie_blok(resultat$risiko),
+  list(
+    sektionsraekke("Beslutningsmål"),
+    lav_raekke("Break-even afkast (leasing = kontant)", pct(breakeven_afkast * 100))
+  )
+)
+
+tabel <- do.call(rbind, raekker)
+er_sektion_vec <- vapply(
+  raekker, function(blok) isTRUE(attr(blok, "er_sektion")), logical(1)
+)
+tabel_html <- knitr::kable(tabel,
+  format = "html", row.names = FALSE,
+  table.attr = 'class="compare"', escape = FALSE
+)
+# Gør sektionsoverskrifterne grå.
+kableExtra::row_spec(
+  tabel_html, which(er_sektion_vec),
+  extra_css = "background:#f3f5f7;font-weight:600;"
+)
+```
+
+## Værditab er den store ubekendt
+
+Kun ejeren (kontant/lån) bærer værditabet; leasingprisen er kontraktfast. Afskrivning
+løber ud ad x-aksen, TCO/år op ad y-aksen. Blåt bånd = kontant, orange = leasing;
+båndbredden spænder fra risikofri til risikobehæftet rente. Lodret streg = bilens
+empiriske afskrivning. Hvor båndene krydser, vender regnestykket.
+
+```{r plot_vaerditab, fig.width=16, fig.height=4.6}
+# For hver bil: TCO/år som funktion af afskrivningen. Kontant = et bånd mellem de to
+# rentescenarier (afhænger af restværdien); leasing = et fladt bånd (kontraktfast).
+# Dette plot handler netop om afskrivning → tving den til (uanset on/off-switchen).
+gemt_afskrivning <- MED_AFSKRIVNING
+MED_AFSKRIVNING <- TRUE
+afskrivning_sekvens <- seq(0.05, 0.22, length.out = 60)
+gamle_par <- par(mfrow = c(1, length(biler)), mar = c(4.2, 4.6, 3, 1))
+for (bil in biler) {
+  kontant_lav <- sapply(afskrivning_sekvens, function(sats) {
+    tco_kontant(bil, k_rf, sats)
+  }) / 1000
+  kontant_hoej <- sapply(afskrivning_sekvens, function(sats) {
+    tco_kontant(bil, k_risk, sats)
+  }) / 1000
+  leasing_baand <- sort(c(tco_leasing(bil, k_rf), tco_leasing(bil, k_risk))) / 1000
+  ylim <- range(kontant_lav, kontant_hoej, leasing_baand)
+  plot(NA,
+    xlim = range(afskrivning_sekvens) * 100, ylim = ylim,
+    xlab = "Afskrivning (%/år)", ylab = "TCO (1.000 kr/år)",
+    main = gsub("_", " ", bil)
+  )
+  # kontant-bånd (mellem lav og høj rente)
+  polygon(
+    c(afskrivning_sekvens, rev(afskrivning_sekvens)) * 100,
+    c(pmin(kontant_lav, kontant_hoej), rev(pmax(kontant_lav, kontant_hoej))),
+    col = adjustcolor(COL["kontant"], .25), border = NA
+  )
+  # leasing-bånd (fladt)
+  rect(
+    min(afskrivning_sekvens) * 100, leasing_baand[1],
+    max(afskrivning_sekvens) * 100, leasing_baand[2],
+    col = adjustcolor(COL["leasing"], .25), border = NA
+  )
+  lines(afskrivning_sekvens * 100, kontant_lav, col = COL["kontant"])
+  lines(afskrivning_sekvens * 100, kontant_hoej, col = COL["kontant"])
+  abline(h = leasing_baand, col = COL["leasing"])
+  # bilens empiriske afskrivning
+  abline(v = afskrivning[bil] * 100, lty = 2, col = "grey30")
+  text(
+    afskrivning[bil] * 100, ylim[2], sprintf(" %s", pct(afskrivning[bil] * 100)),
+    adj = c(0, 1), cex = .8, col = "grey30"
+  )
+  if (bil == biler[1]) {
+    legend("topleft", c("Kontant", "Leasing"),
+      fill = adjustcolor(COL[c("kontant", "leasing")], .5),
+      border = NA, bty = "n", cex = .9
+    )
+  }
+}
+par(gamle_par)
+MED_AFSKRIVNING <- gemt_afskrivning # gendan brugerens on/off-valg
+```
+
+## Hvor meget hænger konklusionen på afskrivningsestimatet?
+
+Afskrivningsraterne er modellens mest usikre tal — og de er ikke lige gode. Nogle mærker
+har hundredvis af brugtannoncer over 14 års aldersspænd; andre har 32 annoncer over 3 år,
+hvor der næsten ingen løftestang er til at måle en hældning. Derfor rapporterer vi dem nu
+**med interval** og tester eksplicit, om konklusionerne overhovedet afhænger af dem.
+
+Raterne kommer fra en regression pr. mærke (`log(pris) ~ alder + log(km)`) på brugtannoncer,
+krympet empirisk-Bayes mod gruppens middel. Et mærke **uden** el-data har posterior = prior,
+altså præcis gruppemidlen på `r pct(GRUPPEMIDDEL*100)` — det gælder Subaru, hvis el-model er
+for ny til at optræde i brugtmarkedet.
+
+```{r afskrivning_usikkerhed, results='asis'}
+# Datagrundlaget bag hver bils rate, så læseren kan se hvilke estimater der bærer
+# vægt og hvilke der reelt er gruppens gennemsnit.
+n_annoncer <- afskrivning_tabel$n[match(maerke, afskrivning_tabel$brand)]
+usikkerhed_tabel <- data.frame(
+  Bil = gsub("_", " ", biler),
+  Grundlag = ifelse(
+    is.na(n_annoncer), "gruppens prior (ingen el-data)",
+    sprintf("%s el-annoncer", fmt(n_annoncer))
+  ),
+  `Afskrivning (%/år)` = pct(afskrivning * 100),
+  `95 %-interval` = sprintf(
+    "%s–%s", pct(afskrivning_lo * 100), pct(afskrivning_hi * 100)
+  ),
+  `Bredde (pp)` = sub("\\.", ",", sprintf(
+    "%.1f", 100 * (afskrivning_hi - afskrivning_lo)
+  )),
+  check.names = FALSE, stringsAsFactors = FALSE
+)
+scroll_table(usikkerhed_tabel)
+```
+
+```{r interval_bredder, include=FALSE}
+# Bruges i teksten nedenfor, så tallene aldrig kan komme ud af trit med tabellen.
+pp <- function(x) sub("\\.", ",", sprintf("%.1f", x)) # procentpoint, dansk komma
+bredde_pp <- 100 * (afskrivning_hi - afskrivning_lo)
+spaend_pp <- 100 * (max(afskrivning) - min(afskrivning))
+```
+
+Intervallerne er `r pp(min(bredde_pp))`–`r pp(max(bredde_pp))` procentpoint brede. Til sammenligning er hele spændet mellem
+bilernes punktestimater kun `r pp(spaend_pp)` procentpoint. Med andre ord: usikkerheden på ét
+enkelt estimat er af samme størrelsesorden som hele den forskel mellem biler, vi ellers
+ville konkludere på. Subarus interval er det bredeste, fordi der slet ikke ligger el-data
+bag den — den arver gruppens fordeling ubeskåret.
+
+### Test 1: ens rate for alle vs. individuelle estimater
+
+Hvis konklusionerne er robuste, bør de overleve, at vi kasserer alle de individuelle
+estimater og giver **alle biler samme rate** (gruppemidlen). Ændrer rækkefølgen eller
+eje-vs-leasing-svaret sig ikke, er de individuelle estimater ikke bærende.
+
+```{r test_ens_rate, results='asis'}
+tco_individuel <- sapply(biler, function(bil) tco_kontant(bil, k_risk))
+tco_ens <- sapply(biler, function(bil) {
+  tco_kontant(bil, k_risk, afskrivningsrate = GRUPPEMIDDEL)
+})
+leasing_niveau <- sapply(biler, function(bil) tco_leasing(bil, k_risk))
+
+ens_tabel <- data.frame(
+  Bil = gsub("_", " ", biler),
+  `Rate individuel` = pct(afskrivning * 100),
+  `TCO/år` = fmt(round(tco_individuel)),
+  Rang = rank(tco_individuel),
+  `TCO/år (ens rate)` = fmt(round(tco_ens)),
+  `Rang (ens)` = rank(tco_ens),
+  Forskel = fmt(round(tco_ens - tco_individuel)),
+  `Eje < leasing` = ifelse(
+    tco_individuel < leasing_niveau, "ja", "nej"
+  ),
+  `Eje < leasing (ens)` = ifelse(tco_ens < leasing_niveau, "ja", "nej"),
+  check.names = FALSE, stringsAsFactors = FALSE
+)
+scroll_table(ens_tabel)
+```
+
+`r if (identical(rank(tco_individuel), rank(tco_ens))) "**Rækkefølgen er uændret**" else "**Rækkefølgen ændrer sig**"`, og eje-vs-leasing-svaret er
+`r if (identical(tco_individuel < leasing_niveau, tco_ens < leasing_niveau)) "det samme for alle biler" else "forskelligt for mindst én bil"`.
+
+### Test 2: simuleret usikkerhed — hvor ofte holder konklusionen?
+
+Her trækker vi `r fmt(2000)` gange en rate for hver bil fra dens egen posteriorfordeling og
+genberegner TCO. Det oversætter usikkerheden til sandsynligheder i stedet for ét tal.
+
+```{r monte_carlo, fig.width=11, fig.height=5.2}
+set.seed(42)
+N_SIM <- 2000
+sim_tco <- matrix(
+  NA_real_, N_SIM, length(biler),
+  dimnames = list(NULL, biler)
+)
+for (i in seq_len(N_SIM)) {
+  rate_traek <- 1 - exp(rnorm(length(biler), afskrivning_b, afskrivning_sd))
+  for (j in seq_along(biler)) {
+    sim_tco[i, j] <- tco_kontant(biler[j], k_risk, afskrivningsrate = rate_traek[j])
+  }
+}
+p_billigst <- prop.table(table(factor(
+  biler[apply(sim_tco, 1, which.min)],
+  levels = biler
+)))
+p_eje_bedst <- colMeans(sim_tco < matrix(
+  leasing_niveau, N_SIM, length(biler),
+  byrow = TRUE
+))
+
+gamle_par <- par(mar = c(9.5, 4.6, 3, 1))
+# y-aksen skal rumme både boksene og leasingniveauerne; ellers falder de dyreste
+# leasingaftaler uden for tegneområdet og bliver usynlige.
+y_omraade <- range(c(sim_tco, leasing_niveau)) / 1000
+boxplot(sim_tco / 1000,
+  names = gsub("_", " ", biler), las = 2, col = adjustcolor(COL["kontant"], .35),
+  ylim = y_omraade + c(-1, 1) * 0.03 * diff(y_omraade),
+  ylab = "TCO/år ved kontantkøb (1.000 kr)",
+  main = "Simuleret usikkerhed i afskrivning (2.000 træk)"
+)
+points(seq_along(biler), leasing_niveau / 1000,
+  pch = 18, cex = 1.6,
+  col = COL["leasing"]
+)
+legend("topright", c("Eje (simuleret fordeling)", "Leasing (fast)"),
+  fill = c(adjustcolor(COL["kontant"], .35), NA), border = c("black", NA),
+  pch = c(NA, 18), col = c(NA, COL["leasing"]), bty = "n", cex = .85
+)
+par(gamle_par)
+```
+
+```{r monte_carlo_tabel, results='asis'}
+mc_tabel <- data.frame(
+  Bil = gsub("_", " ", biler),
+  `TCO/år median` = fmt(round(apply(sim_tco, 2, median))),
+  `90 %-interval` = sprintf(
+    "%s–%s", fmt(round(apply(sim_tco, 2, quantile, .05))),
+    fmt(round(apply(sim_tco, 2, quantile, .95)))
+  ),
+  `P(billigst at eje)` = pct(100 * as.numeric(p_billigst)),
+  `P(eje < leasing)` = pct(100 * p_eje_bedst),
+  check.names = FALSE, stringsAsFactors = FALSE
+)
+scroll_table(mc_tabel)
+```
+
+```{r tvilling_test, results='asis'}
+# Tvilling-testen: Toyota og Subaru er identisk hardware til næsten samme pris.
+# Hvor meget af forskellen mellem dem er signal, og hvor meget er estimatstøj?
+tvilling_diff <- sim_tco[, "Subaru_E_Outback"] - sim_tco[, "Toyota_bZ4X_Touring"]
+cat(sprintf(
+  paste0(
+    "**Tvilling-testen (Subaru minus Toyota, kontantkøb):** median ",
+    "%s kr/år, 90 %%-interval %s til %s kr/år. Toyota er billigst i %s af trækkene."
+  ),
+  fmt(round(median(tvilling_diff))),
+  fmt(round(quantile(tvilling_diff, .05))),
+  fmt(round(quantile(tvilling_diff, .95))),
+  pct(100 * mean(tvilling_diff > 0))
+))
+```
+
+## Forskel vs. alternativafkast
+
+Alternativafkastet `k` løber ud ad x-aksen; den årlige forskel (leasing − kontant) op
+ad y-aksen. Over nul er leasing dyrest. Hvor kurven skærer nul, er break-even-afkastet
+(punkterne). De stiplede lodrette streger er vores to scenarier.
+
+```{r plot_forskel, fig.width=9, fig.height=5.4}
+# Årlig forskel (leasing − kontant) som funktion af alternativafkastet. Under nul er
+# leasing billigst; skæringen med nul-linjen er break-even-afkastet (punkterne).
+rente_sekvens <- seq(0, 0.15, length.out = 90)
+bil_farver <- c(
+  "steelblue", "firebrick", "darkgreen", "purple", "goldenrod", "darkcyan"
+)[seq_along(biler)]
+forskel_matrix <- sapply(biler, function(bil) {
+  sapply(rente_sekvens, function(rente) {
+    (tco_leasing(bil, rente = rente) - tco_kontant(bil, rente)) / 1000
+  })
+})
+gamle_par <- par(mar = c(4.4, 4.6, 2, 1))
+matplot(rente_sekvens * 100, forskel_matrix,
+  type = "l", lty = 1, lwd = 2, col = bil_farver,
+  xlab = "Alternativafkast k (%/år, efter skat)",
+  ylab = "Forskel: leasing − kontant (1.000 kr/år)",
+  main = "Leasing bliver relativt billigere ved højere afkastkrav"
+)
+abline(h = 0, col = "grey50")
+abline(v = c(k_rf, k_risk) * 100, lty = 3, col = "grey60") # de to scenarier
+text(
+  c(k_rf, k_risk) * 100, par("usr")[4], c("risikofri", "risiko"),
+  adj = c(-0.05, 1.2), cex = .75, col = "grey40"
+)
+# markér break-even-afkastet på nul-linjen, hvis det ligger inden for intervallet
+for (i in seq_along(biler)) {
+  breakeven_i <- breakeven_afkast[i]
+  if (!is.na(breakeven_i) && breakeven_i > 0 && breakeven_i < .15) {
+    points(breakeven_i * 100, 0, pch = 19, col = bil_farver[i])
+  }
+}
+legend(
+  "topright", gsub("_", " ", biler),
+  col = bil_farver, lwd = 2, bty = "n", cex = .9
+)
+par(gamle_par)
+```
+
+## TCO/år side om side (tre finansieringsformer)
+
+```{r plot_bars, fig.width=12, fig.height=6}
+# Søjlediagram: TCO/år for de tre finansieringsformer, ét panel pr. rentescenarie.
+gamle_par <- par(mfrow = c(1, 2), mar = c(8.5, 4.4, 3, 1))
+for (scenarie in names(scenarier)) {
+  tco_matrix <- rbind(
+    Kontant = resultat[[scenarie]]$kontant,
+    Lånekøb = resultat[[scenarie]]$laan,
+    Leasing = resultat[[scenarie]]$leasing
+  ) / 1000
+  colnames(tco_matrix) <- gsub("_", " ", biler)
+  soejler <- barplot(tco_matrix,
+    beside = TRUE, col = COL[c("kontant", "laan", "leasing")],
+    las = 2, cex.names = 0.8, ylab = "TCO (1.000 kr/år)",
+    main = sprintf(
+      "%s (%s)", ifelse(scenarie == "risikofri", "Risikofri", "Risiko"),
+      pct(scenarier[[scenarie]] * 100)
+    ),
+    legend.text = c("Kontant", "Lånekøb", "Leasing"),
+    args.legend = list(x = "topright", bty = "n", cex = .85)
+  )
+  text(soejler, tco_matrix, labels = round(tco_matrix), pos = 3, cex = .6, xpd = NA)
+}
+par(gamle_par)
+```
+
+## Beslutningsvariabel vs. holdeperiode (1–15 år)
+
+For **kontant** og **lån** falder TCO/år kraftigt, når det stejle værditab fordeles på
+flere år. Efter **garantien udløber** (Škoda/VW `r garanti_aar["Skoda_Enyaq_85"]` år,
+Peugeot `r garanti_aar["Peugeot_e3008"]` år) vokser reparationerne og *bremser* faldet — men
+med de kalibrerede, lave elbil-reparationsomkostninger vender kurven først efter 15 år,
+så den økonomisk optimale ejertid er **≥15 år** (●). Elbiler er billige nok at
+vedligeholde til, at "sælg før de store regninger" vejer mindre end for benzinbiler;
+hæv `REPAIR_VAEKST`/`REPAIR_POSTGAR` (fx for frygt for batteri-/HV-svigt) for at trække
+et tidligere optimum frem. **Leasing** stiger nu svagt med holdeperioden (inflation af gen-leasing) og rammes *ikke* af
+reparationsklippen (altid ny bil under garanti). Hvor eje-kurven dykker under
+leasing-linjen (~år 3–4), begynder det at betale sig at eje. Ved risikobehæftet afkast
+(`r pct(k_risk*100)`).
+
+```{r plot_holdeperiode, fig.width=16, fig.height=4.6}
+# For hver bil: TCO/år ved eje (kontant/lån) som funktion af holdeperioden, med
+# leasing (stiger svagt pga. inflation). ● markerer den optimale ejertid.
+aar_sekvens <- 1:15
+gamle_par <- par(mfrow = c(1, length(biler)), mar = c(4.2, 4.6, 3, 1))
+for (bil in biler) {
+  y_kontant <- sapply(aar_sekvens, function(holdeperiode) {
+    tco_kontant(bil, k_risk, holdeperiode = holdeperiode)
+  }) / 1000
+  y_laan <- sapply(aar_sekvens, function(holdeperiode) {
+    tco_laan(bil, k_risk, holdeperiode = holdeperiode)
+  }) / 1000
+  y_leasing <- sapply(aar_sekvens, function(holdeperiode) {
+    tco_leasing(bil, k_risk, holdeperiode = holdeperiode)
+  }) / 1000
+  ylim <- range(y_kontant, y_laan, y_leasing)
+  plot(aar_sekvens, y_kontant,
+    type = "l", lwd = 2, col = COL["kontant"], ylim = ylim,
+    xlab = "Holdeperiode (år)", ylab = "TCO (1.000 kr/år)",
+    main = gsub("_", " ", bil)
+  )
+  lines(aar_sekvens, y_laan, lwd = 2, col = COL["laan"])
+  lines(aar_sekvens, y_leasing, lwd = 2, col = COL["leasing"])
+  optimal_aar <- aar_sekvens[which.min(y_kontant)]
+  points(optimal_aar, min(y_kontant), pch = 19, col = COL["kontant"], cex = 1.3)
+  ved_kant <- optimal_aar >= max(aar_sekvens) - 1
+  label <- sprintf(
+    if (optimal_aar >= max(aar_sekvens)) "opt. ≥%d år " else "opt. %d år ",
+    optimal_aar
+  )
+  text(optimal_aar, min(y_kontant), label,
+    adj = c(if (ved_kant) 1 else 0, 1.4), cex = .8, col = COL["kontant"]
+  )
+  if (bil == biler[1]) {
+    legend("topright", c("Kontant", "Lånekøb", "Leasing"),
+      col = COL[c("kontant", "laan", "leasing")], lwd = 2, bty = "n", cex = .85
+    )
+  }
+}
+par(gamle_par)
+```
+
+## Direkte leasingomkostning vs. kontantpris
+
+**Venstre:** kumuleret direkte leasingbetaling (førstegangsydelser + ydelser + gebyrer +
+overkørte km) for hver holdeperiode. De stiplede vandrette linjer er hver bils
+kontantpris — hvor kurven krydser, har du betalt bilens fulde pris i ren leasing.
+**Højre:** samme direkte leasingomkostning pr. år delt med kontantprisen (leasingfaktor)
+— falder, efterhånden som førstegangsydelsen fordeles på flere år.
+
+```{r plot_direkte, fig.width=12, fig.height=5}
+# Venstre: kumuleret direkte leasingbetaling pr. holdeperiode; stiplet linje = hver
+# bils kontantpris. Højre: samme betaling pr. år ÷ kontantprisen (leasingfaktoren).
+aar_sekvens <- 1:15
+gamle_par <- par(mfrow = c(1, 2), mar = c(4.4, 4.8, 3, 1))
+kumuleret_matrix <- sapply(biler, function(bil) {
+  sapply(aar_sekvens, function(holdeperiode) {
+    leasing_direkte_kumuleret(bil, holdeperiode)
+  }) / 1000
+})
+matplot(aar_sekvens, kumuleret_matrix,
+  type = "l", lty = 1, lwd = 2, col = bil_farver, xlab = "Holdeperiode (år)",
+  ylab = "Kumuleret direkte leasing (1.000 kr)",
+  main = "Kumuleret leasing vs. kontantpris"
+)
+for (i in seq_along(biler)) {
+  abline(h = kontantpris[biler[i]] / 1000, lty = 2, col = bil_farver[i])
+}
+legend(
+  "topleft", gsub("_", " ", biler),
+  col = bil_farver, lwd = 2, bty = "n", cex = .85
+)
+faktor_matrix <- sapply(biler, function(bil) {
+  sapply(aar_sekvens, function(holdeperiode) {
+    leasing_direkte_kumuleret(bil, holdeperiode) / holdeperiode / kontantpris[bil] * 100
+  })
+})
+matplot(aar_sekvens, faktor_matrix,
+  type = "l", lty = 1, lwd = 2, col = bil_farver, xlab = "Holdeperiode (år)",
+  ylab = "Direkte leasing/år ÷ kontantpris (%)", main = "Leasingfaktor pr. år"
+)
+legend(
+  "topright", gsub("_", " ", biler),
+  col = bil_farver, lwd = 2, bty = "n", cex = .85
+)
+par(gamle_par)
+```
+
+## Værditab: køb vs. leasing — hvornår krydser det?
+
+Som ejer bærer du bilens **værditab**; som leasingtager betaler du en tilsyneladende
+**konstant** årlig sats (leasingfaktoren, `r pct(min(leasingfaktor)*100)`–`r pct(max(leasingfaktor)*100)`
+af prisen). Men værditabet ved køb er *stejlt det første år* (`r pct(DEP_AAR1*100)` —
+registreringsafgift, moms og nybilspræmie fordamper) og **aftagende** derefter. De to
+kurver må derfor krydse hinanden.
+
+**Øverste række:** årligt værditab (ejer, aftagende) mod årlig leasingbetaling (flad).
+De krydser typisk mellem år 1 og 2 — kun det første år taber ejeren mere værdi, end
+leasing koster. **Nederste række:** kumuleret — hvor leasing-linjen skærer ejerens
+værditab (●) er **break-even**: holder du bilen længere, har du tabt mindre værdi ved
+at eje, end du havde betalt i leasing.
+
+**Hvorfor kan forhandleren tjene på en sats under første års værditab?** Fordi
+forhandlerens/leasingselskabets værditab regnes fra en **indkøbspris under
+kontantprisen** (flåderabat `r pct(FORHANDLER_RABAT*100)`). Den grå kurve er
+forhandlerens værditab — den ligger konstant `r pct(FORHANDLER_RABAT*100)` af prisen
+*under* ejerens, fordi leasingselskabet aldrig betalte nybilspræmien. Netop det gab
+finansierer rente, service og profit — og forklarer, hvordan leasing kan se billigt ud
+tidligt.
+
+```{r plot_vaerditab_be, fig.width=16, fig.height=8.5}
+# Værditab-linsen (2 rækker). Øverst: ejerens ÅRLIGE værditab (aftagende) vs. den flade
+# leasingbetaling. Nederst: KUMULERET — ejerens værditab, leasingbetaling og
+# forhandlerens værditab (indkøb under listepris → gabet er profit-rum); ● = break-even.
+# Handler om værditab → tving afskrivning til (uanset on/off-switchen).
+gemt_afskrivning <- MED_AFSKRIVNING
+MED_AFSKRIVNING <- TRUE
+aar_kontinuert <- seq(0.1, 15, length.out = 140)
+gamle_par <- par(mfrow = c(2, length(biler)), mar = c(4.2, 4.8, 3, 1))
+# øverste række: årligt værditab (ejer) vs. årlig leasingbetaling
+for (bil in biler) {
+  aar_sekvens <- 1:15
+  ejer_aarlig <- sapply(aar_sekvens, function(aar) {
+    bilvaerdi(bil, aar - 1) - bilvaerdi(bil, aar)
+  }) / 1000
+  leasing_aarlig <- leasing_direkte_aarlig[bil] / 1000
+  plot(aar_sekvens, ejer_aarlig,
+    type = "b", pch = 19, col = COL["kontant"],
+    ylim = range(0, ejer_aarlig, leasing_aarlig),
+    xlab = "År", ylab = "Værditab / betaling pr. år (1.000 kr)",
+    main = gsub("_", " ", bil)
+  )
+  abline(h = leasing_aarlig, col = COL["leasing"], lwd = 2)
+  kryds <- which(ejer_aarlig < leasing_aarlig)[1] # 1. år hvor eje taber mindst
+  if (!is.na(kryds) && kryds > 1) abline(v = kryds - 0.5, lty = 3, col = "grey50")
+  if (bil == biler[1]) {
+    legend("topright", c("Ejer: værditab/år", "Leasing/år"),
+      col = COL[c("kontant", "leasing")], lwd = 2, pch = c(19, NA),
+      bty = "n", cex = .85
+    )
+  }
+}
+# nederste række: kumuleret værditab (ejer + forhandler) vs. kumuleret leasing
+for (bil in biler) {
+  ejer_kumuleret <- (kontantpris[bil] - bilvaerdi(bil, aar_kontinuert)) / 1000
+  leasing_kumuleret <- leasing_direkte_aarlig[bil] * aar_kontinuert / 1000
+  forhandler_kumuleret <- pmax(
+    (kontantpris[bil] * (1 - FORHANDLER_RABAT) - bilvaerdi(bil, aar_kontinuert)) / 1000, 0
+  )
+  plot(aar_kontinuert, ejer_kumuleret,
+    type = "l", lwd = 2, col = COL["kontant"],
+    ylim = range(0, ejer_kumuleret, leasing_kumuleret),
+    xlab = "Holdeperiode (år)", ylab = "Kumuleret (1.000 kr)",
+    main = gsub("_", " ", bil)
+  )
+  lines(aar_kontinuert, leasing_kumuleret, lwd = 2, col = COL["leasing"])
+  lines(aar_kontinuert, forhandler_kumuleret, lwd = 2, lty = 2, col = COL["laan"])
+  breakeven_aar <- breakeven_vaerditab[bil]
+  if (!is.na(breakeven_aar)) {
+    abline(v = breakeven_aar, lty = 3, col = "grey50")
+    points(
+      breakeven_aar, (kontantpris[bil] - bilvaerdi(bil, breakeven_aar)) / 1000,
+      pch = 19, cex = 1.2
+    )
+    text(
+      breakeven_aar, 0, sprintf(" %.1f år", breakeven_aar),
+      adj = c(-0.05, 0), cex = .8, col = "grey30"
+    )
+  }
+  if (bil == biler[1]) {
+    legend("topleft", c("Ejer værditab", "Leasing betalt", "Forhandler værditab"),
+      col = COL[c("kontant", "leasing", "laan")], lwd = 2, lty = c(1, 1, 2),
+      bty = "n", cex = .8
+    )
+  }
+}
+par(gamle_par)
+MED_AFSKRIVNING <- gemt_afskrivning # gendan brugerens on/off-valg
+```
+
+Bemærk: dette er en ren **værditabs-linse** — den ser bort fra alternativomkostning,
+drift og at leasing *inkluderer* service og fjerner restværdirisiko. Den fulde
+beslutning står i TCO-tabellen ovenfor; her isolerer vi, hvem der taber mest værdi.
+
+## Hvor meget betyder ekstra km?
+
+Kørslen løber ud ad x-aksen. **Kontant** (stiplet) påvirkes kun svagt — via el. **Leasing**
+(fuldt optrukket) har et **knæk** ved kontraktens inkluderede km (lodret streg):
+derover koster hver km ekstra `r sub("\\.", ",", as.character(1))` kr (jf. `Leasing_ekstra_km`),
+så kurven stiger stejlt. Beregnet ved risikobehæftet afkast.
+
+```{r plot_ekstrakm, fig.width=16, fig.height=4.6}
+# For hver bil: TCO/år som funktion af årlig kørsel. Leasing (fuldt optrukket) knækker
+# opad ved kontraktens inkluderede km (overkørte km straffes); kontant stiger kun via el.
+km_sekvens <- seq(8000, 35000, by = 1000)
+gamle_par <- par(mfrow = c(1, length(biler)), mar = c(4.2, 4.6, 3, 1))
+for (bil in biler) {
+  y_kontant <- sapply(km_sekvens, function(km_pr_aar) {
+    tco_kontant(bil, k_risk, km_pr_aar = km_pr_aar)
+  }) / 1000
+  y_leasing <- sapply(km_sekvens, function(km_pr_aar) {
+    tco_leasing(bil, rente = k_risk, km_pr_aar = km_pr_aar)
+  }) / 1000
+  plot(km_sekvens / 1000, y_leasing,
+    type = "l", lwd = 2, col = COL["leasing"], ylim = range(y_kontant, y_leasing),
+    xlab = "Kørsel (1.000 km/år)", ylab = "TCO (1.000 kr/år)",
+    main = gsub("_", " ", bil)
+  )
+  lines(km_sekvens / 1000, y_kontant, lwd = 2, lty = 2, col = COL["kontant"])
+  abline(v = leasing_inkl_km[bil] / 1000, lty = 3, col = "grey50") # kontraktloft
+  text(
+    leasing_inkl_km[bil] / 1000, min(y_kontant, y_leasing),
+    sprintf(" kontrakt %g", leasing_inkl_km[bil] / 1000),
+    adj = c(0, 0), cex = .75, col = "grey40"
+  )
+  if (bil == biler[1]) {
+    legend("topleft", c("Leasing", "Kontant"),
+      col = COL[c("leasing", "kontant")], lwd = 2, lty = c(1, 2),
+      bty = "n", cex = .85
+    )
+  }
+}
+par(gamle_par)
+```
+
+## Vedligehold: det kendte og det ukendte
+
+Vedligehold er delt i to poster, fordi de er kendt med vidt forskellig sikkerhed:
+
+* **Planlagt service** er *km-drevet* og prissat — eftersyn med fast interval, skiftevis
+  et lille og et stort. Kører du dobbelt så langt, kommer du til service dobbelt så tit.
+  For **Toyota og Subaru er priserne indhentede tilbud**; de øvrige er skøn.
+* **Uplanlagte reparationer** er *alders-drevne* og rammer først efter fabriksgarantien.
+  Det er den store ukendte — og derfor den, vi laver følsomhedsanalyse på nedenfor.
+
+### Planlagt service — hvad et eftersyn faktisk koster
+
+Prisen pr. besøg er middelværdien af et lille og et stort eftersyn (de veksler), plus
+transport til værkstedet. Ved `r fmt(KM_AAR)` km/år giver intervallet antallet af besøg:
+
+```{r service_tabel, results='asis'}
+# Km-drevet service, opgjort pr. bil. Interval og pris er de to drivere; besøg
+# pr. år følger direkte af den årlige kørsel.
+snit_pr_besoeg <- (service_lille + service_stor) / 2 + service_transport
+besoeg_pr_aar <- KM_AAR / service_interval_km
+service_tabel <- data.frame(
+  Bil = gsub("_", " ", biler),
+  `Interval (km)` = fmt(service_interval_km),
+  `Lille (kr)` = fmt(round(service_lille)),
+  `Stor (kr)` = fmt(round(service_stor)),
+  `Transport (kr)` = fmt(round(service_transport)),
+  `Snit pr. besøg (kr)` = fmt(round(snit_pr_besoeg)),
+  `Besøg/år` = sub("\\.", ",", sprintf("%.2f", besoeg_pr_aar)),
+  `Service (kr/år)` = fmt(round(besoeg_pr_aar * snit_pr_besoeg)),
+  Kilde = service_kilde,
+  check.names = FALSE, stringsAsFactors = FALSE
+)
+scroll_table(service_tabel)
+```
+
+Bemærk spredningen: Toyota og Subaru skal til eftersyn **hver 15.000 km**, mens
+VW/Škoda er antaget til 30.000 km. Ved `r fmt(KM_AAR)` km/år er det forskellen mellem
+~1,3 og ~0,7 besøg om året — altså næsten en fordobling af serviceudgiften, som den
+tidligere flade antagelse på 2.000 kr/år helt skjulte.
+
+### Uplanlagte reparationer — hvor følsom er beslutningen?
+
+Reparationer efter garanti er den mest usikre antagelse — og rammer *kun* eje, ikke
+leasing. Her løber det årlige reparationsniveau (år 1 efter garanti) ud ad x-aksen; den
+stiplede lodrette streg er vores kalibrering (`r fmt(REPAIR_POSTGAR)` kr). Alt beregnet
+ved risikobehæftet afkast (`r pct(k_risk*100)`).
+
+**Øverste række:** TCO/år når du sælger på det *optimale* tidspunkt — kontant/lån stiger
+kun langsomt, fordi den optimale ejertid selv trækker sig sammen. **Nederste række:**
+netop den optimale ejertid — jo dyrere reparationer, jo tidligere bør du sælge, mod
+garantigrænsen (stiplet vandret). Pointen: en fornuftig ejer *tilpasser* holdeperioden,
+så eje forbliver billigere end leasing selv ved høje reparationsudgifter.
+
+```{r plot_repair_sens, fig.width=16, fig.height=8.5}
+# Følsomhed: hvordan afhænger beslutningen af reparationsniveauet efter garanti?
+# Vi sweeper REPAIR_POSTGAR og finder for hvert niveau den OPTIMALE holdeperiode.
+reparation_sekvens <- seq(0, 15000, length.out = 50)
+holdeperiode_grid <- 1:20 # holdeperioder vi søger den optimale iblandt
+
+# Find den holdeperiode der minimerer TCO/år; returnér (optimal periode, TCO).
+optimal_holdeperiode <- function(bil, rente, tco_funktion) {
+  tco_vaerdier <- sapply(holdeperiode_grid, function(holdeperiode) {
+    tco_funktion(bil, rente, holdeperiode = holdeperiode)
+  })
+  index <- which.min(tco_vaerdier)
+  c(holdeperiode = holdeperiode_grid[index], tco = tco_vaerdier[index])
+}
+
+# For hvert reparationsniveau: optimal holdeperiode + TCO for kontant og lån. Vi
+# overskriver REPAIR_POSTGAR midlertidigt (den læses globalt af vedligehold) og
+# gendanner kalibreringen bagefter.
+gemt_reparation <- REPAIR_POSTGAR
+resultat_reparation <- lapply(biler, function(bil) {
+  sapply(reparation_sekvens, function(reparationsniveau) {
+    REPAIR_POSTGAR <<- reparationsniveau
+    optimal_kontant <- optimal_holdeperiode(bil, k_risk, tco_kontant)
+    optimal_laan <- optimal_holdeperiode(bil, k_risk, tco_laan)
+    c(
+      tco_kontant = optimal_kontant[["tco"]],
+      hold_kontant = optimal_kontant[["holdeperiode"]],
+      tco_laan = optimal_laan[["tco"]],
+      hold_laan = optimal_laan[["holdeperiode"]]
+    )
+  })
+})
+REPAIR_POSTGAR <- gemt_reparation
+names(resultat_reparation) <- biler
+leasing_reference <- sapply(biler, function(bil) tco_leasing(bil, k_risk))
+
+gamle_par <- par(mfrow = c(2, length(biler)), mar = c(4.2, 4.8, 3, 1))
+# øverste række: TCO/år ved optimal ejertid vs. reparationsniveau
+for (bil in biler) {
+  bil_matrix <- resultat_reparation[[bil]]
+  y_kontant <- bil_matrix["tco_kontant", ] / 1000
+  y_laan <- bil_matrix["tco_laan", ] / 1000
+  y_leasing <- leasing_reference[bil] / 1000
+  plot(reparation_sekvens / 1000, y_kontant,
+    type = "l", lwd = 2, col = COL["kontant"],
+    ylim = range(y_kontant, y_laan, y_leasing),
+    xlab = "Reparation efter garanti, år 1 (1.000 kr)",
+    ylab = "TCO/år v. optimal ejertid (1.000 kr)",
+    main = gsub("_", " ", bil)
+  )
+  lines(reparation_sekvens / 1000, y_laan, lwd = 2, col = COL["laan"])
+  abline(h = y_leasing, lwd = 2, col = COL["leasing"])
+  abline(v = gemt_reparation / 1000, lty = 3, col = "grey50") # kalibrering
+  kryds <- which(y_laan >= y_leasing)[1] # niveau hvor leasing overhaler eje
+  if (!is.na(kryds)) {
+    abline(v = reparation_sekvens[kryds] / 1000, lty = 3, col = COL["leasing"])
+    text(
+      reparation_sekvens[kryds] / 1000, min(y_kontant),
+      sprintf("leasing bedst\n>%s", fmt(round(reparation_sekvens[kryds]))),
+      adj = c(-0.05, 0), cex = .7, col = COL["leasing"]
+    )
+  }
+  if (bil == biler[1]) {
+    legend("topleft", c("Kontant", "Lånekøb", "Leasing"),
+      col = COL[c("kontant", "laan", "leasing")], lwd = 2, bty = "n", cex = .8
+    )
+  }
+}
+# nederste række: optimal ejertid vs. reparationsniveau
+for (bil in biler) {
+  bil_matrix <- resultat_reparation[[bil]]
+  hold_kontant <- bil_matrix["hold_kontant", ]
+  hold_laan <- bil_matrix["hold_laan", ]
+  plot(reparation_sekvens / 1000, hold_kontant,
+    type = "l", lwd = 2, col = COL["kontant"],
+    ylim = range(1, hold_kontant, hold_laan, garanti_aar[bil]),
+    xlab = "Reparation efter garanti, år 1 (1.000 kr)",
+    ylab = "Optimal ejertid (år)", main = gsub("_", " ", bil)
+  )
+  lines(reparation_sekvens / 1000, hold_laan, lwd = 2, col = COL["laan"])
+  abline(h = garanti_aar[bil], lty = 2, col = "grey40") # garantigrænse
+  abline(v = gemt_reparation / 1000, lty = 3, col = "grey50")
+  text(
+    max(reparation_sekvens) / 1000, garanti_aar[bil], "garanti",
+    adj = c(1, -0.3), cex = .7, col = "grey40"
+  )
+  if (bil == biler[1]) {
+    legend("topright", c("Kontant", "Lånekøb"),
+      col = COL[c("kontant", "laan")], lwd = 2, bty = "n", cex = .8
+    )
+  }
+}
+par(gamle_par)
+```
+
+Bemærk søgt ejertid 1–`r max(holdeperiode_grid)` år (derfor loftet ved `r max(holdeperiode_grid)`). Er
+leasingprisen høj nok (fx Peugeot), når eje aldrig op på leasing inden for realistiske
+reparationsniveauer — den optimale reaktion er at sælge tidligere, ikke at lease.
+
+## Metode og forbehold
+
+**Regnemetode.** Betalinger lægges på en årlig tidslinje, diskonteres med `k`, summeres
+til NPV og omregnes til ækvivalent årlig omkostning `k/(1−(1+k)^−n)`. Alternativ­om­kost­ningen
+ligger *i* diskonteringen — ingen separat kapitalrente (dobbelttælling). Beregningen er
+**nominel**: fremtidige omkostninger inflateres med `r pct(INFLATION*100)`/år og
+diskonteres med den nominelle rente.
+
+**Nominel = real — og hvad renten *er*.** Vi diskonterer med **alternativafkastet**
+(`r pct(k_rf*100)` eller `r pct(k_risk*100)`) — dét, de bundne penge ellers kunne have
+tjent — *ikke* med inflationen. At regne nominelt (inflaterede beløb ÷ nominel rente)
+giver *præcis* samme nutidsværdi som at regne realt (dagens kroner ÷ realrenten
+`(1+k)/(1+π)−1`); modellen regner altså reelt i realrente, blot udtrykt i nominelle
+kroner. At en krone køber mindre om nogle år fanges af, at **realrenten er lav — for
+risikofri endda negativ** (se antagelserne): kapital bundet risikofrit taber købekraft,
+selv om det nominelle afkast er positivt. Inflationen lægges bevidst *ikke* oveni renten
+— den nominelle rente indeholder den allerede, så det ville dobbelttælle.
+
+- **Kontant/lån** ejer bilen: fuld pris (eller udbetaling + annuitetslån med rentefradrag)
+  betales, drift løber årligt, restværdien modtages ved salg. Restgæld ud over
+  holdeperioden indfries ved salg. Låneydelsen er fast nominel. **Vedligehold er delt i to
+  poster med hver sin driver:** planlagt service er *km-drevet* (eftersyn hver
+  `r fmt(min(service_interval_km))`–`r fmt(max(service_interval_km))` km, skiftevis lille
+  og stort eftersyn), mens uplanlagte reparationer er *alders-drevet* og først rammer
+  efter fabriksgarantien.
+- **Leasing** modelleres over holdeperioden (rundet op til hele kontrakter à 48 mdr for
+  Škoda/VW/Peugeot, 36 mdr for Subaru, Toyota og ë-C3). Ydelser er faste nominelt *inden for* en kontrakt, men hver ny
+  gen-leasing prissættes til det inflaterede niveau. Hver cyklus er en ny bil. Service er
+  inkluderet; dæk, forsikring, CO₂-ejerafgift, brændstof og overkørte km betales af
+  leasingtageren.
+
+**Vigtige forbehold — tallene er eksempler, ikke et konkret tilbud:**
+
+- **Leasingtal** er estimater skaleret fra 2026-kampagner (headline 10.000–15.000 km/år) til
+  20.000 km/år; Subaru fra glad.dk (5.695 kr/md @ 15.000 km, 36 mdr); ë-C3 skaleret fra
+  1.495 kr/md @ 10.000 km (+400 kr pr. 5.000 km → 2.295 @ 20.000). **Lånevilkår**
+  (`r pct(LAAN_UDB_PCT*100)` / `r pct(LAAN_RENTE*100)` / `r LAAN_LOBETID` år), **drift**
+  (forsikring, dæk, ejerafgift) og **post-garanti-reparationer**
+  (`r fmt(REPAIR_POSTGAR)` kr/år stigende `r pct(REPAIR_VAEKST*100)`) er skøn —
+  sidstnævnte styrer den optimale ejertid og bør kalibreres mod egne tal.
+  Ret alt i `r INPUT` og kontrolpanelet.
+- **Service er nu km-drevet med rigtige værkstedspriser.** **Toyota og Subaru er
+  sourcede:** Toyota Køge prisberegner (2. sep. 2026) og et autoriseret Subaru-værksted
+  i Danmark (skriftligt tilbud 3. sep. 2026, e-Outback 280 kW, inkl. moms; værkstedet
+  navngives ikke, da tilbuddet er udstedt til en privatperson og ikke offentliggjort som
+  prisliste) — begge med eftersyn hver 15.000 km,
+  skiftevis lille og stort. Subaru-tilbuddet rækker kun til 75.000 km/5 år; derefter holdes
+  priserne flade, hvilket er en **ekstrapolation**. Toyota bærer 40 km ekstra transport pr.
+  besøg à 2,5 kr/km. **De øvrige fire biler er skøn** — både pris og interval (VW/Škoda
+  antaget 30.000 km, Stellantis 25.000 km) er sat ud fra segment og mærkepraksis, ikke
+  indhentede tilbud. Kilden pr. bil står i input-tabellen (`Service_kilde`).
+- **Afskrivning** = stejlt 1. år (`r pct(DEP_AAR1*100)`, fast skøn) og derefter din
+  mærke-/el-specifikke brugtmarkedsrate. Første-års-klippen og forhandlerrabatten
+  (`r pct(FORHANDLER_RABAT*100)`) er runde skøn — de driver værditabs-break-even og bør
+  kalibreres mod konkrete indkøbs-/gensalgspriser. **Subaru mangler el-data** (for få
+  brugte) → manuel `r pct(afskrivning["Subaru_E_Outback"]*100)`-rate; meget usikker, så se
+  afskrivnings-følsomhedsplottet for hvordan konklusionen afhænger af den. **ë-C3** bruger
+  Citroën-mærkets el-rate (`r pct(afskrivning["Citroen_eC3"]*100)`) — lav, men baseret på ældre
+  Citroën-elbiler; en ny budget-elbil kan falde hurtigere, så tjek følsomhedsplottet.
+  **⚠️ Vigtig inkonsistens mellem tvillingerne:** Toyota bZ4X Touring og Subaru e-Outback er
+  ifølge garantianalysen *identisk hardware*, og de koster næsten det samme
+  (`r fmt(kontantpris["Toyota_bZ4X_Touring"])` vs `r fmt(kontantpris["Subaru_E_Outback"])` kr).
+  Alligevel giver modellen dem `r pct(afskrivning["Toyota_bZ4X_Touring"]*100)` mod
+  `r pct(afskrivning["Subaru_E_Outback"]*100)` i årlig afskrivning — udelukkende fordi Toyota
+  *har* empiriske brugtdata og Subaru ikke har. Den ene forskel forklarer stort set hele
+  forskellen i deres TCO/år og er en **artefakt af manglende data, ikke evidens**. Enten bør
+  Subarus rate sættes tæt på Toyotas, eller også bør de to sammenlignes med afskrivning slået
+  fra.
+  Fordi raten er så usikker, kan **hele værditabet slås fra** med `MED_AFSKRIVNING <- FALSE`
+  (restværdi = fuld kontantpris) — en nedre grænse for ejeromkostningen. De to
+  værditab-plots viser altid afskrivning uanset switchen.
+- **Inflation** (`r pct(INFLATION*100)`/år): løbende omkostninger vokser med inflationen, og
+  hver ny leasingkontrakt prissættes inflateret — så inflation gør **leasing relativt dyrere**
+  over tid. Fast-forrentede **låneydelser holdes nominelt konstante**. Afkastrenterne er
+  nominelle efter skat (aktie 27 %, rente 37 %, rentefradrag 33 %); de reale renter (efter
+  inflation) står i antagelserne. Bemærk: lån-vs-kontant-forskellen er upåvirket af
+  inflation, da både lånerente og diskonteringsrente er nominelle og faste.
+
+Knit: `rmarkdown::render("leasing_vs_kontant.Rmd")`. Ny bil = ny kolonne i `r INPUT`.
+```

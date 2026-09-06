@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Advanced Decision Tools Built with Claude Code</title>
+<meta name="description" content="Eight reproducible decision analyses about buying a car in Denmark — total cost of ownership, battery-warranty valuation, depreciation, and weighted scoring models.">
+<style>
+  :root {
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --ink: #14161a;
+    --ink-soft: #4a515c;
+    --ink-faint: #767e8b;
+    --rule: #e3e1dc;
+    --accent: #1f5f4f;
+    --accent-soft: #eaf2ef;
+    --tag: #f1efea;
+    --shadow: 0 1px 2px rgba(20,22,26,.05), 0 6px 18px rgba(20,22,26,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101215;
+      --panel: #171a1e;
+      --ink: #eceef1;
+      --ink-soft: #b2b9c3;
+      --ink-faint: #838b96;
+      --rule: #272b31;
+      --accent: #6fd3b3;
+      --accent-soft: #16241f;
+      --tag: #21252a;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101215;
+    --panel: #171a1e;
+    --ink: #eceef1;
+    --ink-soft: #b2b9c3;
+    --ink-faint: #838b96;
+    --rule: #272b31;
+    --accent: #6fd3b3;
+    --accent-soft: #16241f;
+    --tag: #21252a;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.3);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-feature-settings: "kern" 1;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 0 24px 96px; }
+
+  header { padding: 72px 0 40px; border-bottom: 1px solid var(--rule); }
+  h1 {
+    margin: 0 0 14px;
+    font-size: clamp(1.9rem, 5vw, 2.9rem);
+    line-height: 1.15;
+    letter-spacing: -.02em;
+    font-weight: 660;
+  }
+  .credits {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 .55em;
+    margin: 0;
+    color: var(--ink-soft);
+    font-size: .96rem;
+  }
+  .credits > span { white-space: nowrap; }
+  .credits .sep { color: var(--ink-faint); }
+  @media (max-width: 520px) { .credits .sep { display: none; } }
+  .lede {
+    margin: 26px 0 0;
+    max-width: 62ch;
+    color: var(--ink-soft);
+    font-size: 1.06rem;
+  }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  h2 {
+    margin: 56px 0 6px;
+    font-size: .8rem;
+    font-weight: 700;
+    letter-spacing: .10em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  h2 + .sub { margin: 0 0 20px; color: var(--ink-faint); font-size: .9rem; max-width: 60ch; }
+
+  .grid { display: grid; gap: 14px; }
+  @media (min-width: 700px) { .grid { grid-template-columns: 1fr 1fr; } }
+
+  a.card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 20px 22px 18px;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color .15s ease, transform .15s ease;
+  }
+  a.card:hover, a.card:focus-visible {
+    border-color: var(--accent);
+    transform: translateY(-1px);
+    outline: none;
+  }
+  a.card h3 {
+    margin: 0;
+    font-size: 1.06rem;
+    font-weight: 620;
+    letter-spacing: -.01em;
+    color: var(--ink);
+  }
+  a.card p { margin: 0; color: var(--ink-soft); font-size: .93rem; }
+  a.card:hover h3 { color: var(--accent); }
+
+  .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .tag {
+    font-size: .72rem;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    font-weight: 640;
+    color: var(--ink-faint);
+    background: var(--tag);
+    border-radius: 5px;
+    padding: 3px 7px;
+  }
+  .tag.lang { color: var(--accent); background: var(--accent-soft); }
+
+  .note {
+    margin: 44px 0 0;
+    padding: 18px 20px;
+    border-left: 3px solid var(--rule);
+    color: var(--ink-soft);
+    font-size: .92rem;
+  }
+  .note p { margin: 0 0 10px; }
+  .note p:last-child { margin-bottom: 0; }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    color: var(--ink-faint);
+    font-size: .88rem;
+  }
+  footer a { color: var(--accent); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .88em;
+    background: var(--tag);
+    padding: .12em .38em;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Advanced Decision Tools<br>Built with Claude Code</h1>
+  <p class="credits">
+    <span>Co-written by Claude Code Opus&nbsp;5</span><span class="sep">·</span><span>Directed by Martin Hoshi Vognsen</span>
+  </p>
+  <p class="lede">
+    Eight reproducible analyses of a single ordinary question — <strong>which car to
+    buy</strong> — worked to the point where the answer stops depending on taste.
+    Each note states its assumptions in one parameter block, sources what can be
+    sourced, labels what cannot, and shows the mileage or price at which its own
+    conclusion reverses.
+  </p>
+</header>
+
+<h2>Cost and value</h2>
+<p class="sub">What a car costs over its life, and what the contracts around it are worth.</p>
+<div class="grid">
+
+  <a class="card" href="fuel-cost-per-km.html">
+    <h3>Cost per kilometre by fuel source</h3>
+    <p>Electric, petrol, diesel and plug-in hybrid in Denmark, 2026 — and the point
+       at which the cheapest kilometre stops being the cheapest car. Separates
+       marginal cost, price-free running cost at matched mileage, and full TCO,
+       because they give different answers.</p>
+    <div class="meta"><span class="tag lang">English</span><span class="tag">TCO</span><span class="tag">Break-even</span></div>
+  </a>
+
+  <a class="card" href="warranty-analysis.html">
+    <h3>Toyota vs Subaru battery warranties</h3>
+    <p>The bZ4X Touring and the e-Outback are the same hardware under
+       near-identical warranty mechanisms, and one number apart. Prices the
+       difference as an insurance payoff — degradation as a first-passage
+       problem solved in closed form rather than simulated, calibrated two ways,
+       with the verdict bracketed by claim severity.</p>
+    <div class="meta"><span class="tag lang">English</span><span class="tag">First passage</span><span class="tag">Present value</span></div>
+  </a>
+
+  <a class="card" href="depreciation-by-brand.html">
+    <h3>Used-car depreciation by brand</h3>
+    <p>Annual depreciation estimated per brand from used listings, as a log-price
+       model in age with mileage held constant, plus a sparse new-price
+       cross-check. Ends with a Solterra-vs-bZ4X case study on badge-engineered
+       twins.</p>
+    <div class="meta"><span class="tag lang">English</span><span class="tag">Regression</span><span class="tag">Case study</span></div>
+  </a>
+
+  <a class="card" href="leasing-vs-kontant.html">
+    <h3>Leasing vs. kontant- og lånefinansieret køb</h3>
+    <p>Totaløkonomi pr. år med alternativomkostning, holdeperiode og ekstra-km.
+       Sammenligner privatleasing mod kontantkøb og lånefinansiering over en
+       otteårig horisont, med afkastet af den bundne kapital prissat eksplicit.</p>
+    <div class="meta"><span class="tag lang">Dansk</span><span class="tag">TCO</span><span class="tag">Opportunity cost</span></div>
+  </a>
+
+</div>
+
+<h2>Physics</h2>
+<p class="sub">One question where the answer is mechanical rather than financial.</p>
+<div class="grid">
+
+  <a class="card" href="drivetrain-lateral-capacity.html">
+    <h3>Drivetrain torque split and lateral tyre capacity</h3>
+    <p>A friction-circle analysis of AWD, FWD and RWD on low-friction surfaces:
+       how splitting longitudinal demand across four contact patches instead of
+       two changes the lateral grip still available, and when that margin
+       actually matters.</p>
+    <div class="meta"><span class="tag lang">English</span><span class="tag">Friction circle</span></div>
+  </a>
+
+</div>
+
+<h2>Weighted scoring models</h2>
+<p class="sub">Where the criteria are genuinely incommensurable, the honest tool is an explicit weighting: the priorities are written down and ranked before any car is scored, so a reader can disagree with the weights rather than with the conclusion.</p>
+<div class="grid">
+
+  <a class="card" href="pointmodel-store-biler.html">
+    <h3>Bilsammenligning — vægtet pointmodel</h3>
+    <p>Den generelle model: skalerer til vilkårligt mange biler, med otte
+       prioriterede kriterier fra driftsikkerhed til fartbump. Manglende data
+       håndteres eksplicit — et kriterium med for få oplysninger udelades og
+       siges udeladt, frem for at blive gættet.</p>
+    <div class="meta"><span class="tag lang">Dansk</span><span class="tag">General</span></div>
+  </a>
+
+  <a class="card" href="pointmodel-smaa-biler.html">
+    <h3>Små biler — vægtet pointmodel</h3>
+    <p>Billige, fabriksnye biler med automatgear, scoret på den samme model med
+       et kriteriesæt tilpasset segmentet.</p>
+    <div class="meta"><span class="tag lang">Dansk</span><span class="tag">Segment</span></div>
+  </a>
+
+  <a class="card" href="pointmodel-smaa-elbiler.html">
+    <h3>Små elbiler — vægtet pointmodel</h3>
+    <p>Samme model igen, denne gang for små fabriksnye elbiler, skåret ned til
+       tre vægtede kriterier: samlet økonomi, driftsikkerhed og
+       personsikkerhed.</p>
+    <div class="meta"><span class="tag lang">Dansk</span><span class="tag">Segment</span></div>
+  </a>
+
+</div>
+
+<div class="note">
+  <p><strong>A note on the pages.</strong> Each note is a single self-contained
+     HTML file with its figures embedded, so it works offline and will still open
+     in a decade. That makes them large — 2 to 6 MB each — and slow on a phone
+     connection.</p>
+  <p><strong>A note on the numbers.</strong> These are working notes about one
+     purchase decision in Denmark in 2026, not advice. Several of the
+     most load-bearing figures are labelled as estimates in the notes themselves;
+     the raw used-car listings behind the depreciation work are not
+     redistributed. Prices, taxes and specifications were correct on the
+     retrieval dates given at each point of use.</p>
+</div>
+
+<footer>
+  <p>Source, data and method: <a href="https://github.com/mahovo/car-decision-tools">github.com/mahovo/car-decision-tools</a>.
+     Code under the MIT Licence; notes and derived data under CC BY 4.0. Not
+     affiliated with or endorsed by Anthropic, bilbasen.dk, or any manufacturer
+     or dealer named in the analyses.</p>
+  <p>Rebuild the notes from source with <code>Rscript build.R</code>.</p>
+</footer>
+
+</div>
+</body>
+</html>

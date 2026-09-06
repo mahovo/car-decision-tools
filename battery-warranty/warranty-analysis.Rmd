@@ -1,0 +1,2893 @@
+---
+title: "Toyota vs Subaru Warranties"
+subtitle: "bZ4X Touring and e-Outback: identical hardware, near-identical mechanism, one number apart"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    toc_depth: 3
+params:
+  # --- contract terms (facts, not estimates) ---
+  base_km: 160000
+  base_years: 8
+  age_ceiling: 10
+  increment_km: 15000
+  toyota_ceiling_km: 1000000
+  subaru_ceiling_km: 200000
+  subaru_no_grant_km: 185000
+  soh_threshold: 0.70
+
+  # --- degradation calibration A (benign) ---
+  cal_a_calendar_loss_10y: 6
+  cal_a_km_crit_pure: 600000
+  cal_a_sd_unit: 0.22
+
+  # --- degradation calibration B (adverse) ---
+  cal_b_calendar_loss_10y: 10
+  cal_b_km_crit_pure: 450000
+  cal_b_sd_unit: 0.25
+
+  # --- usage rate distribution ---
+  med_rate: 15000
+  sdlog_rate: 0.6
+
+  # --- financial (ALL REAL, today's DKK) ---
+  # Severity is two different numbers depending on who is paying. Sections 6
+  # and 8 need what it costs the manufacturer to honour a claim; section 7
+  # needs what the buyer would pay if NOT covered, at retail and including
+  # Danish VAT. Both are UNSOURCED assumptions - see section 1.2.
+  severity_maker_dkk: 67000
+  severity_buyer_dkk: 100000
+  severity_buyer_sensitivity: [67000, 100000, 150000, 200000]
+  severity_decline: 0.08
+  discount_real: 0.02
+  repair_worthy: 0.75
+
+  # --- persistency ---
+  pi_check: 1.0
+  pi_sensitivity: [1.0, 0.98, 0.95]
+  # Toyota DK's terms indicate a missed check suspends rather than destroys
+  # cover, so "reinstatable" is the default. "permanent" is the older reading,
+  # shown alongside because the two differ by more than an order of magnitude.
+  lapse_mode: reinstatable
+
+  # --- service economics ---
+  # Full per-visit prices, not premiums. Services alternate: a small one at odd
+  # multiples of the interval, a large one at even multiples.
+  #
+  # TOYOTA: SOURCED. Toyota Koege price calculator, retrieved 2 September 2026.
+  # https://www.toyota-koege.dk/vaerksted/kalkulator
+  service_toyota_small_dkk: 2495
+  service_toyota_large_dkk: 3495
+  toyota_prices_sourced: TRUE
+
+  # SUBARU: SOURCED. Written quote from an authorised Subaru workshop in
+  # Denmark, 3 September 2026, for an e-Outback 280 kW, incl. VAT. (The
+  # workshop is not named here: the quote was issued to an individual, not
+  # published as a tariff.) Same alternating pattern as Toyota: small at odd
+  # multiples, large at even.
+  # The quote runs only to 75,000 km / 5 years; beyond that, prices are held
+  # flat, which is an extrapolation - see section 7.4.
+  service_subaru_small_dkk: 2411.25
+  service_subaru_large_dkk: 3366.53
+  subaru_prices_sourced: TRUE
+  subaru_quoted_to_km: 75000
+
+  # INDEPENDENT: PLACEHOLDER, no quote obtained. Now the binding unknown -
+  # see section 7.5, which inverts the question to ask what it would have to be.
+  service_independent_small_dkk: 1600
+  service_independent_large_dkk: 2200
+  independent_prices_sourced: FALSE
+  independent_sensitivity: [1200, 1600, 2000, 2400]
+
+  service_margin_low: 500
+  service_margin_high: 1500
+
+  # --- servicing strategy ---
+  # 0 = franchised dealer from new. Because cover is reinstatable (3.3), a
+  # buyer can use an independent early and return to the dealer later.
+  dealer_from_year: 0
+  dealer_from_grid: [0, 2, 4, 5, 6, 7, 8]
+
+  # --- travel to the workshop, round trip per visit ---
+  # Only DIFFERENCES matter, so only differences need entering. Both are
+  # measured against your Subaru dealer; negative means nearer than it.
+  travel_extra_toyota_km: 40
+  travel_extra_independent_km: 0
+  # Marginal cost per km: energy, tyres and wear, plus whatever the driver
+  # puts on their own time. UNSOURCED judgement - see section 1.1.
+  travel_cost_dkk_per_km: 2.5
+  travel_cost_sensitivity: [1.0, 2.5, 4.0]
+
+  # --- the buyer's own situation (set these before knitting) ---
+  my_rate: 30000             # km/yr you actually expect to drive
+  my_rate_compare: 20000     # a second rate to compare against, e.g. the kink
+  my_holding_years: 10       # years you expect to keep the car
+  my_dealer_anyway: TRUE     # would you use a franchised dealer regardless?
+  my_price_gap_dkk: 0        # how much more the Toyota costs to buy, if any
+
+  # --- resale of unused cover ---
+  # Share of the actuarial value of remaining warranty that a used-car buyer
+  # actually pays for. The least well grounded number in the note; see 7.6.
+  resale_capitalisation: 0.6
+  resale_cap_sensitivity: [0.3, 0.6, 1.0]
+  holding_grid: [3, 4, 5, 6, 7, 8, 9, 10]
+
+  # --- presentation ---
+  buyer_rates: [15000, 20000, 25000, 40000, 60000]
+  cap_grid: [160000, 200000, 300000, 400000, 500000, 650000, 1000000]
+  discount_sensitivity: [0.01, 0.02, 0.05]
+  # Genuinely credible range for the real rate. The 5% in the grid above is
+  # carried only to demonstrate insensitivity, not as a defensible value.
+  discount_credible: [0.01, 0.02]
+  decline_sensitivity: [0.03, 0.06, 0.08, 0.10, 0.12]
+  ref_rate: 40000
+  fx_dkk_eur: 7.46
+
+  # --- optional Monte Carlo cross-check ---
+  use_simulation: FALSE
+  n_sim: 1000000
+  seed: 101
+---
+
+```{css, echo=FALSE}
+.main-container { max-width: 1100px; }
+table { border-collapse: collapse; margin: 1em 0; }
+table th, table td { padding: 4px 12px; border-bottom: 1px solid #ddd;
+                     text-align: right; }
+table th:first-child, table td:first-child { text-align: left; font-weight: 600; }
+table thead th { border-bottom: 2px solid #999; text-align: right; }
+blockquote { font-size: 100%; }
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.align = "center", fig.width = 7.5, fig.height = 5, dpi = 150,
+  out.width = "100%"
+)
+
+options(scipen = 999)
+# Without a UTF-8 ctype, kable() renders em dashes as literal "<U+2014>"
+suppressWarnings(Sys.setlocale("LC_CTYPE", "en_US.UTF-8"))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(scales))
+
+source("R/model.R")
+```
+
+```{r plot-style, include=FALSE}
+# Figure text is deliberately ASCII-only: the PNG device silently drops em
+# dashes and arrows, which then render as "..." inside the plot.
+pal <- c(toyota = "#0072B2", subaru = "#D55E00",
+         A = "#009E73", B = "#CC79A7", neutral = "grey35")
+
+theme_note <- function(base_size = 11) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(colour = "grey92"),
+      plot.title = element_text(face = "bold", size = base_size + 0.5),
+      plot.subtitle = element_text(colour = "grey30", margin = margin(b = 8)),
+      plot.caption = element_text(colour = "grey45", hjust = 0, size = 8.2),
+      strip.text = element_text(face = "bold"),
+      legend.position = "top",
+      legend.title = element_blank(),
+      axis.title = element_text(colour = "grey25")
+    )
+}
+
+lab_km <- label_comma(accuracy = 1)
+```
+
+```{r validate, include=FALSE}
+# Contract terms are facts. Put them in params so the tables follow them, but do
+# not let them be silently overridden into nonsense.
+stopifnot(
+  "Subaru ceiling must not exceed Toyota's" =
+    params$subaru_ceiling_km <= params$toyota_ceiling_km,
+  "base km must not exceed either ceiling" =
+    params$base_km <= params$subaru_ceiling_km,
+  "base years must not exceed the age ceiling" =
+    params$base_years <= params$age_ceiling,
+  "SoH threshold must lie strictly inside (0, 1)" =
+    params$soh_threshold > 0 && params$soh_threshold < 1,
+  "increment must be positive" = params$increment_km > 0,
+  "usage rate dispersion must be positive" = params$sdlog_rate > 0,
+  "repair-worthiness is a probability" =
+    params$repair_worthy >= 0 && params$repair_worthy <= 1,
+  "per-check compliance is a probability" =
+    params$pi_check > 0 && params$pi_check <= 1
+)
+```
+
+```{r derived, include=FALSE}
+num <- \(x) as.numeric(unlist(x))
+
+d_crit <- 100 * (1 - params$soh_threshold)
+
+cal <- list(
+  A = c(
+    deg_coefs(params$cal_a_calendar_loss_10y, params$cal_a_km_crit_pure, d_crit),
+    list(
+      sd_unit = params$cal_a_sd_unit,
+      calendar_loss_10y = params$cal_a_calendar_loss_10y,
+      km_crit_pure = params$cal_a_km_crit_pure,
+      label = "A (benign)"
+    )
+  ),
+  B = c(
+    deg_coefs(params$cal_b_calendar_loss_10y, params$cal_b_km_crit_pure, d_crit),
+    list(
+      sd_unit = params$cal_b_sd_unit,
+      calendar_loss_10y = params$cal_b_calendar_loss_10y,
+      km_crit_pure = params$cal_b_km_crit_pure,
+      label = "B (adverse)"
+    )
+  )
+)
+
+buyer_rates <- num(params$buyer_rates)
+cap_grid <- num(params$cap_grid)
+discount_grid <- num(params$discount_sensitivity)
+discount_cred <- num(params$discount_credible)
+decline_grid <- num(params$decline_sensitivity)
+pi_grid <- num(params$pi_sensitivity)
+
+# Partial application so the call sites stay readable.
+rate_of <- function(cc, years, cap_km, pi_check = 1,
+                    lapse_mode = params$lapse_mode) {
+  claim_rate(
+    years, cap_km, cc$a, cc$b, cc$sd_unit, d_crit,
+    params$med_rate, params$sdlog_rate, pi_check,
+    params$base_km, params$increment_km, lapse_mode
+  )
+}
+
+gap_of <- function(cc, rate, discount = params$discount_real,
+                   decline = params$severity_decline,
+                   severity = params$severity_buyer_dkk,
+                   dealer_from = params$dealer_from_year) {
+  gap_value(
+    rate, cc$a, cc$b, cc$sd_unit, d_crit,
+    params$age_ceiling, params$toyota_ceiling_km, params$subaru_ceiling_km,
+    severity, decline, discount, params$repair_worthy,
+    cover_from = dealer_from
+  )
+}
+
+# Small/large price pair per network. The alternation is a real feature of the
+# published Toyota tariff, not a modelling convenience.
+price_set <- function(ind_small = params$service_independent_small_dkk,
+                      ind_large = params$service_independent_large_dkk,
+                      per_km = params$travel_cost_dkk_per_km) {
+  # Getting there is part of the price of a visit, and the three destinations
+  # are not equidistant. Only differences matter, so a common component would
+  # cancel; what does not cancel is the extra distance to the Toyota dealer.
+  trav <- function(km) km * per_km
+
+  # The Subaru dealer is the baseline, so it carries no travel term; any
+  # component common to all three would cancel out of the difference anyway.
+  list(
+    toyota = c(params$service_toyota_small_dkk, params$service_toyota_large_dkk) +
+      trav(params$travel_extra_toyota_km),
+    subaru = c(params$service_subaru_small_dkk, params$service_subaru_large_dkk),
+    independent = c(ind_small, ind_large) +
+      trav(params$travel_extra_independent_km)
+  )
+}
+
+travel_extra_toyota_km <- params$travel_extra_toyota_km
+
+# Ratio of large to small, used to scale an independent quote given as one
+# number into a consistent pair.
+ind_ratio <- params$service_independent_large_dkk /
+  params$service_independent_small_dkk
+
+# Subaru counts as still-placeholder only while it is both unsourced and
+# identical to Toyota; supplying figures should switch the prose over.
+subaru_placeholder <- !isTRUE(params$subaru_prices_sourced) &&
+  identical(
+    c(params$service_subaru_small_dkk, params$service_subaru_large_dkk),
+    c(params$service_toyota_small_dkk, params$service_toyota_large_dkk)
+  )
+
+# `dealer_anyway` is a scenario, not a setting: the note reports both
+# throughout rather than picking one, because it is the single largest swing
+# factor in the buyer's answer and only the buyer knows which applies.
+cost_of <- function(rate, dealer_anyway = FALSE,
+                    discount = params$discount_real,
+                    prices = price_set(),
+                    horizon = Inf,
+                    dealer_from = params$dealer_from_year) {
+  servicing_differential(
+    rate, params$age_ceiling, params$subaru_ceiling_km, params$increment_km,
+    prices, discount, horizon_years = horizon,
+    dealer_anyway = dealer_anyway, dealer_from = dealer_from
+  )
+}
+
+# Mean cost of a visit under the alternating schedule, for prose.
+mean_visit <- function(pair) mean(pair)
+
+scenarios <- tibble(
+  dealer_anyway = c(FALSE, TRUE),
+  scenario = c("Independent workshop otherwise", "Franchised dealer regardless")
+)
+
+# Formatting helpers
+fmt_km  <- \(x) formatC(x, format = "d", big.mark = ",")
+fmt_dkk <- \(x) formatC(round(x), format = "d", big.mark = ",")
+fmt_pct <- \(x, dp = 2) paste0(formatC(100 * x, format = "f", digits = dp), "%")
+fmt_num <- \(x, dp = 1) formatC(x, format = "f", digits = dp)
+
+show_table <- function(x, ...) {
+  kable(x, ...) |>
+    kable_styling(full_width = FALSE, position = "left",
+                  bootstrap_options = c("striped", "condensed"))
+}
+```
+
+```{r headline-numbers, include=FALSE}
+uncapped <- map_dbl(cal, \(cc) rate_of(cc, params$age_ceiling, Inf))
+
+checks_to_toyota <- checks_required(
+  params$toyota_ceiling_km, params$base_km, params$increment_km, from_zero = TRUE
+)
+checks_to_subaru <- checks_required(
+  params$subaru_ceiling_km, params$base_km, params$increment_km, from_zero = TRUE
+)
+extra_to_toyota <- checks_required(
+  params$toyota_ceiling_km, params$base_km, params$increment_km
+)
+extra_to_subaru <- checks_required(
+  params$subaru_ceiling_km, params$base_km, params$increment_km
+)
+
+# Usage rate below which the two contracts coincide: cap / T
+gap_opens_at <- params$subaru_ceiling_km / params$age_ceiling
+
+buyer_gap <- expand_grid(rate = buyer_rates, calib = names(cal)) |>
+  mutate(res = map2(calib, rate, \(k, r) gap_of(cal[[k]], r))) |>
+  unnest(res, names_repair = "unique") |>
+  select(rate = rate...1, calib, term_subaru, term_toyota, p_gap, t_bar, pv_dkk)
+
+pv_at <- function(r, k) {
+  buyer_gap |>
+    filter(rate == r, calib == k) |>
+    pull(pv_dkk)
+}
+```
+
+```{r buyer-case, include=FALSE}
+# Everything specific to the reader's own situation, computed once so the
+# verdict can be stated up front and the working shown later.
+stopifnot(
+  "my_rate must be positive" = params$my_rate > 0,
+  "my_holding_years must be positive" = params$my_holding_years > 0,
+  "my_dealer_anyway must be TRUE or FALSE" = is.logical(params$my_dealer_anyway)
+)
+
+my <- list(
+  rate = params$my_rate,
+  hold = params$my_holding_years,
+  dealer = isTRUE(params$my_dealer_anyway),
+  price_gap = params$my_price_gap_dkk
+)
+
+my$binds <- my$rate > gap_opens_at
+my$term_subaru <- warranty_term(my$rate, params$age_ceiling,
+                                params$subaru_ceiling_km)
+my$term_toyota <- warranty_term(my$rate, params$age_ceiling,
+                                params$toyota_ceiling_km)
+
+# Gap value over the full contract, and over the buyer's own holding period.
+my$gap_full <- map_dbl(names(cal), \(k) gap_of(cal[[k]], my$rate)$pv_dkk) |>
+  set_names(names(cal))
+
+my$gap_held <- map_dbl(names(cal), \(k) gap_value(
+  my$rate, cal[[k]]$a, cal[[k]]$b, cal[[k]]$sd_unit, d_crit,
+  params$age_ceiling, params$toyota_ceiling_km, params$subaru_ceiling_km,
+  params$severity_buyer_dkk, params$severity_decline, params$discount_real,
+  params$repair_worthy, horizon_years = my$hold
+)$pv_dkk) |>
+  set_names(names(cal))
+
+my$gap_transferred <- my$gap_full - my$gap_held
+
+# --- holding period ---------------------------------------------------------
+cap_default <- params$resale_capitalisation
+# NB: distinct from cap_grid, which holds the mileage ceilings.
+cap_share_grid <- num(params$resale_cap_sensitivity)
+hold_grid <- sort(unique(c(num(params$holding_grid), params$my_holding_years)))
+hold_grid <- hold_grid[hold_grid > 0 & hold_grid <= params$age_ceiling]
+
+hold_value <- function(k, sale_year, capitalisation = cap_default,
+                       dealer_anyway = my$dealer) {
+  holding_value(
+    my$rate, cal[[k]]$a, cal[[k]]$b, cal[[k]]$sd_unit, d_crit,
+    params$age_ceiling, params$toyota_ceiling_km, params$subaru_ceiling_km,
+    params$severity_buyer_dkk, params$severity_decline, params$discount_real,
+    params$repair_worthy, sale_year, params$increment_km,
+    price_set(), capitalisation,
+    dealer_anyway = dealer_anyway
+  ) |>
+    mutate(calib = k, capitalisation = capitalisation)
+}
+
+holding_tbl <- expand_grid(calib = names(cal), sale_year = hold_grid) |>
+  pmap(\(calib, sale_year) hold_value(calib, sale_year)) |>
+  list_rbind()
+
+my$hold_now <- holding_tbl |> filter(sale_year == my$hold)
+my$hold_best <- holding_tbl |>
+  group_by(calib) |>
+  slice_max(net_pv, n = 1, with_ties = FALSE) |>
+  ungroup()
+my$hold_optimal <- all(abs(my$hold_best$sale_year - my$hold) < 1e-9)
+
+# Both servicing scenarios are carried through; `my$dealer` only says which one
+# the buyer expects to be in, it does not suppress the other.
+my$cost <- c(
+  independent = cost_of(my$rate, dealer_anyway = FALSE)$pv_dkk,
+  dealer = cost_of(my$rate, dealer_anyway = TRUE)$pv_dkk
+)
+my$cost_faced <- if (my$dealer) my$cost[["dealer"]] else my$cost[["independent"]]
+my$cost_full <- my$cost[["independent"]]
+my$visits <- cost_of(my$rate, dealer_anyway = FALSE)
+my$extra_visits <- my$visits$visits_freed
+
+my$net <- my$gap_full - my$cost_faced
+my$net_both <- list(
+  independent = my$gap_full - my$cost[["independent"]],
+  dealer = my$gap_full - my$cost[["dealer"]]
+)
+# With the Toyota tariff now known, the live inversion is the independent
+# price: above it the ceiling pays, below it the independent wins.
+my$be_ind <- map_dbl(names(cal), \(k) breakeven_independent(
+  my$gap_full[[k]], my$rate, params$age_ceiling, params$subaru_ceiling_km,
+  params$increment_km, price_set(), params$discount_real,
+  dealer_anyway = my$dealer
+)) |>
+  set_names(names(cal))
+
+# The most the mileage ceiling alone can justify paying at purchase.
+my$worth <- range(my$net)
+
+my$verdict <- if (!my$binds) {
+  "identical"
+} else if (max(my$net) <= 0) {
+  "does not clear"
+} else if (min(my$net) > 0) {
+  "clears"
+} else {
+  "clears only on the adverse calibration"
+}
+
+rng <- function(x, f = fmt_dkk) {
+  lo <- min(x)
+  hi <- max(x)
+  if (isTRUE(all.equal(lo, hi))) return(f(lo))
+  # A dash joiner is unreadable when either end is negative: "-3,320-2,387"
+  # reads as a range spanning zero rather than one lying wholly below it.
+  paste0(f(lo), if (lo < 0) " to " else "–", f(hi))
+}
+```
+
+Working note, `r format(Sys.Date(), '%d %B %Y')`. Currency: DKK, **all figures real in today's money**. Toyota's Danish terms and service tariff are sourced directly; Subaru's Danish terms are still taken from the Nordic release (section 1.1).
+
+> **How to read this.** The document is generated from the parameter block in its source; every number below is computed at knit time, so changing an assumption and re-knitting updates the tables and the prose together. Section 1.1 sets out where the numbers come from and which are unsourced, section 1.2 the financial framing, section 3 the actuarial machinery, and sections 6 and 7 the two questions that actually differ — what the contract costs the manufacturer across a whole fleet, and what it is worth to one buyer. Terminology specific to insurance is glossed where it first appears.
+>
+> **If you are choosing between the two cars**, set `my_rate`, `my_holding_years`, `my_dealer_anyway`, `dealer_from_year` and the three round-trip distances in the parameter block, then read section 7.8. The verdict for the values currently set is immediately below. Section 9 covers what to do with these numbers in a negotiation.
+
+## Your inputs
+
+Everything below is computed from these. They are the only values a reader needs to change; the rest of the parameter block holds contract terms and sourced prices.
+
+```{r inputs-table}
+yn <- \(x) if (isTRUE(x)) "yes" else "no"
+
+tibble(
+  Input = c(
+    "Usage rate you expect",
+    "A second rate to compare against",
+    "Years you expect to keep the car",
+    "Would you use a franchised dealer regardless?",
+    "Switch to a dealer from year",
+    "Extra the Toyota costs to buy",
+    "Toyota workshop further than Subaru's, round trip",
+    "Independent workshop vs Subaru's, round trip",
+    "Cost of driving, per km",
+    "Pack replacement if you are NOT covered",
+    "Real discount rate",
+    "Share of remaining warranty paid for on resale",
+    "Missed check: does cover end or suspend?"
+  ),
+  Setting = c(
+    paste0(fmt_km(params$my_rate), " km/yr"),
+    paste0(fmt_km(params$my_rate_compare), " km/yr"),
+    paste0(fmt_num(params$my_holding_years, 0), " yr"),
+    yn(params$my_dealer_anyway),
+    if (params$dealer_from_year <= 0) "from new" else
+      paste0("year ", fmt_num(params$dealer_from_year, 0)),
+    paste0(fmt_dkk(params$my_price_gap_dkk), " DKK"),
+    paste0(fmt_km(params$travel_extra_toyota_km), " km"),
+    paste0(fmt_km(params$travel_extra_independent_km), " km"),
+    paste0(fmt_num(params$travel_cost_dkk_per_km, 2), " DKK"),
+    paste0(fmt_dkk(params$severity_buyer_dkk), " DKK"),
+    fmt_pct(params$discount_real, 0),
+    fmt_pct(params$resale_capitalisation, 0),
+    params$lapse_mode
+  ),
+  Parameter = paste0(
+    "`",
+    c("my_rate", "my_rate_compare", "my_holding_years", "my_dealer_anyway",
+      "dealer_from_year", "my_price_gap_dkk", "travel_extra_toyota_km",
+      "travel_extra_independent_km", "travel_cost_dkk_per_km",
+      "severity_buyer_dkk", "discount_real", "resale_capitalisation",
+      "lapse_mode"),
+    "`"
+  )
+) |>
+  show_table(align = "lll")
+```
+
+## The answer, for the usage currently set
+
+```{r answer-box, results='asis'}
+bullets <- c()
+
+if (!my$binds) {
+  bullets <- c(bullets, paste0(
+    "**At ", fmt_km(my$rate), " km/yr the two battery warranties are identical.** ",
+    "You would need to drive more than ", fmt_km(gap_opens_at),
+    " km/yr before Subaru's mileage ceiling binds inside the ",
+    params$age_ceiling, "-year age limit. The difference is not small; it is ",
+    "exactly zero, and no financial assumption changes that. Decide on other grounds."
+  ))
+} else {
+  bullets <- c(bullets, paste0(
+    "**Gross value of Toyota's higher ceiling to you: ", rng(my$gap_full),
+    " DKK.** Your Subaru cover would end at year ",
+    fmt_num(my$term_subaru), "; the Toyota runs to year ",
+    fmt_num(my$term_toyota), ". The range spans the two degradation scenarios, ",
+    "which is the dominant uncertainty."
+  ))
+
+  # Both servicing scenarios are always shown; the buyer's stated expectation
+  # is marked rather than used to hide the other.
+  bullets <- c(bullets, paste0(
+    "**Servicing splits the answer in two, and it is the largest swing factor.**",
+    " If you would otherwise use an independent workshop, holding the cover ",
+    "costs you ", fmt_dkk(my$cost[["independent"]]), " DKK (",
+    fmt_num(my$extra_visits, 0), " extra visits tied to a Toyota dealer), leaving ",
+    rng(my$net_both$independent), " DKK. If you would use a franchised dealer ",
+    "regardless, the cost is ", fmt_dkk(my$cost[["dealer"]]),
+    " DKK — both owners then service at a dealer throughout, so what bites is ",
+    "the difference in the two tariffs plus the ",
+    fmt_km(travel_extra_toyota_km), " km of extra driving to the Toyota ",
+    "workshop each visit",
+    if (subaru_placeholder) ", and with the tariffs set equal it is currently all travel"
+    else "",
+    " — leaving ", rng(my$net_both$dealer), " DKK. ",
+    "You have said **", if (my$dealer) "the franchised-dealer case" else
+      "the independent-workshop case", "** applies to you."
+  ))
+
+  bullets <- c(bullets, paste0(
+    "**Verdict on your stated case: the mileage ceiling ", my$verdict, ".** ",
+    if (my$dealer && subaru_placeholder) paste0(
+      "In this scenario the answer turns on Toyota's tariff against Subaru's, ",
+      "and Subaru's is not yet known — the two are currently set equal, which ",
+      "is a placeholder and not a finding. "
+    ) else if (my$dealer) paste0(
+      "In this scenario the answer turns on the two franchised tariffs: Toyota ",
+      "at ", fmt_dkk(params$service_toyota_small_dkk), "/",
+      fmt_dkk(params$service_toyota_large_dkk), " DKK against Subaru at ",
+      fmt_dkk(params$service_subaru_small_dkk), "/",
+      fmt_dkk(params$service_subaru_large_dkk), " DKK a visit, worth ",
+      fmt_dkk(my$cost[["dealer"]]), " DKK over the term. "
+    ) else if (is.finite(max(my$be_ind))) paste0(
+      "It would clear if an independent workshop charged more than ",
+      rng(my$be_ind), " DKK for a small service (scaling the large one in ",
+      "proportion) — i.e. the ceiling pays only when servicing elsewhere is ",
+      "*not* much cheaper than Toyota's ",
+      fmt_dkk(params$service_toyota_small_dkk), " DKK. "
+    ) else "",
+    "Toyota's prices are sourced; ",
+    if (subaru_placeholder) "Subaru's and the independent's are not"
+    else "the independent's is not",
+    " (section 1.1)."
+  ))
+
+  bullets <- c(bullets, paste0(
+    "**You do not have to commit for ten years.** Cover is reinstatable and the ",
+    "base guarantee runs unconditionally to year ",
+    fmt_num(params$base_km / my$rate),
+    ", so servicing elsewhere until Subaru's ceiling falls in year ",
+    fmt_num(my$term_subaru),
+    " and only then returning to Toyota keeps the whole gap value while cutting ",
+    "your Toyota visits sharply. Section 7.10 prices it."
+  ))
+
+  bullets <- c(bullets, if (max(my$gap_transferred) < 1) paste0(
+    "**Selling in year ", fmt_num(my$hold, 0),
+    " means you capture all of it as claims**, since your cover would run out ",
+    "in year ", fmt_num(my$term_toyota),
+    " anyway. Holding to the end is the value-maximising choice, and selling ",
+    "earlier hands part of the cover to the next owner at a discount ",
+    "(section 7.6)."
+  ) else paste0(
+    "**Only ", rng(my$gap_held),
+    " DKK of that falls while you still own the car**, over your ",
+    fmt_num(my$hold, 0), " years of ownership. The remaining ",
+    rng(my$gap_transferred),
+    " DKK is cover you hand on; you recover roughly ",
+    fmt_pct(cap_default, 0),
+    " of it in the resale price, which is why holding longer is worth more ",
+    "(section 7.6)."
+  ))
+}
+
+if (my$price_gap > 0) {
+  # max(my$worth) is the most generous reading: net value on the adverse fade
+  # scenario, which is the upper end of the calibration bracket.
+  best <- max(my$worth)
+
+  bullets <- c(bullets, if (best >= my$price_gap) paste0(
+    "**On price:** at ", fmt_dkk(my$price_gap),
+    " DKK the Toyota's premium is covered by the warranty difference alone, ",
+    "which is worth up to ", fmt_dkk(best),
+    " DKK to you on the adverse fade scenario. On this dimension it is not ",
+    "overpriced — though that is the *most* generous reading, and the benign ",
+    "scenario gives only ", fmt_dkk(min(my$worth)), " DKK."
+  ) else paste0(
+    "**On price:** the battery warranty alone justifies at most ",
+    fmt_dkk(max(0, best)), " DKK of the ", fmt_dkk(my$price_gap),
+    " DKK you say the Toyota costs more, and that is on the adverse fade ",
+    "scenario. The other ", fmt_dkk(my$price_gap - max(0, best)),
+    " DKK has to be justified by something this note does not model."
+  ))
+}
+
+cat(paste0("- ", bullets, collapse = "\n"))
+```
+
+*Set `my_rate` and the other `my_*` parameters to your own situation and re-knit. Section 7.8 shows the working, and section 11 the caveats that could overturn it.*
+
+---
+
+## 1. Scope and assumptions
+
+The two vehicles are the same car: shared e-TNGA platform, same cells, same pack, same BMS, same thermal management. This makes the comparison an unusually clean natural experiment — the engineering substrate is held constant and only the contract varies.
+
+```{r assumptions}
+tibble(
+  Parameter = c(
+    "Capacity threshold",
+    "Pack replacement severity (maker)",
+    "Pack replacement severity (buyer)",
+    "Severity decline",
+    "Discount rate",
+    "Repair-worthiness factor",
+    "Usage rate distribution",
+    "FX"
+  ),
+  Value = c(
+    paste0(fmt_pct(params$soh_threshold, 0), " of original"),
+    paste0(fmt_dkk(params$severity_maker_dkk), " DKK"),
+    paste0(fmt_dkk(params$severity_buyer_dkk), " DKK"),
+    paste0(fmt_pct(params$severity_decline, 0), "/yr real"),
+    paste0(fmt_pct(params$discount_real, 0), " real"),
+    fmt_num(params$repair_worthy, 2),
+    paste0("lognormal, median ", fmt_km(params$med_rate),
+           " km/yr, sigma_log = ", params$sdlog_rate),
+    paste0(fmt_num(params$fx_dkk_eur, 2), " DKK/EUR")
+  ),
+  Basis = c(
+    "Both contracts",
+    paste0("Unsourced; ~EUR ", fmt_dkk(params$severity_maker_dkk / params$fx_dkk_eur),
+           ". Cost to the maker of honouring a claim"),
+    "Unsourced; retail incl. VAT if NOT covered. See section 1.1",
+    "Falling pack prices",
+    "See section 1.2",
+    "P(vehicle still economic to repair at claim)",
+    "Assumption, roughly European private-car",
+    "Peg central rate"
+  )
+) |>
+  show_table(align = "lll")
+```
+
+**Verification status.** **Toyota's Danish terms have now been read directly** (toyota.dk, retrieved 2 September 2026; Appendix C) and they confirm the structure assumed throughout: a capacity guarantee of `r params$base_years` yr / `r fmt_km(params$base_km)` km at `r fmt_pct(params$soh_threshold, 0)`, extended by one year *or* `r fmt_km(params$increment_km)` km — *"hvad der kommer først"* — per EV health check at an authorised Toyota workshop, up to *"`r params$age_ceiling` år eller `r fmt_km(params$toyota_ceiling_km)` km"*, and transferable: *"Alle standardgarantier overføres til en evt. ny ejer."* The dealer tie on which the whole servicing argument rests is real, and so is the transferability the resale channel in section 7.6 depends on.
+
+Subaru's Nordic terms are confirmed from the Subaru Norge press release of 16 January 2026, but **Subaru's Danish terms have still not been read**, and neither has their service tariff. The asymmetry in what is verified now runs the other way from before.
+
+### 1.1 Where these numbers come from
+
+Toyota's Danish contract terms and service tariff are sourced directly, as is Subaru's service tariff. **Several financial inputs are not**, and it is worth being blunt about which is which, because the ones still missing are exactly the ones the buyer's answer turns on.
+
+```{r provenance}
+tibble(
+  Input = c(
+    "Warranty terms, both makes",
+    "Capacity threshold and increment rule",
+    "Usage rate distribution",
+    "Pack replacement severity",
+    "Toyota service tariff (DK)",
+    "Subaru service tariff (DK)",
+    "Independent workshop price",
+    "Dealer gross margin per visit",
+    "Severity decline",
+    "Repair-worthiness factor",
+    "Real discount rate",
+    "Degradation calibration"
+  ),
+  Status = c(
+    "**Sourced**", "**Sourced**", "Assumption", "**Unsourced**", "**Sourced**",
+    "**Sourced**", "**Unsourced**", "**Unsourced**", "Assumption", "Assumption",
+    "Sourced (market)", "Bracketed"
+  ),
+  Basis = c(
+    "Toyota DK read directly (2 Sep 2026); Subaru still on the Norwegian release",
+    "Confirmed for Toyota DK; Subaru assumed to carry from Norway",
+    "Lognormal, median assumed, roughly European private-car",
+    paste0(fmt_dkk(params$severity_maker_dkk), " DKK stated as ~EUR ",
+           fmt_dkk(params$severity_maker_dkk / params$fx_dkk_eur),
+           "; no price quoted, perspective unstated"),
+    paste0(fmt_dkk(params$service_toyota_small_dkk), " / ",
+           fmt_dkk(params$service_toyota_large_dkk),
+           " DKK, alternating. Toyota Koege calculator, retrieved 2 Sep 2026"),
+    paste0(fmt_num(params$service_subaru_small_dkk, 2), " / ",
+           fmt_num(params$service_subaru_large_dkk, 2),
+           " DKK. Authorised Subaru workshop quote, 3 Sep 2026; only to ",
+           fmt_km(params$subaru_quoted_to_km), " km"),
+    paste0("No quote obtained. Placeholder ",
+           fmt_dkk(params$service_independent_small_dkk), " / ",
+           fmt_dkk(params$service_independent_large_dkk), " DKK; see section 7.5"),
+    paste0(fmt_dkk(params$service_margin_low), "-",
+           fmt_dkk(params$service_margin_high), " DKK; an informed guess"),
+    "Falling pack prices; direction well established, rate is not",
+    "Judgement; not estimated from data",
+    "Danish 10Y less anchored inflation expectations (section 1.2)",
+    "Two scenarios chosen to bracket, not one estimate"
+  )
+) |>
+  show_table(align = "lll")
+```
+
+Two of these deserve more than a row.
+
+**Pack replacement severity, and whose cost it is.** The `r fmt_dkk(params$severity_maker_dkk)` DKK figure carries no price quotation behind it; the "~EUR `r fmt_dkk(params$severity_maker_dkk / params$fx_dkk_eur)`" is a restatement of the same number, not a source for it. Worse, it was originally used for two different quantities that cannot be the same number:
+
+- **What it costs the manufacturer** to honour a claim — cells and labour at their own cost. This is what sections 6 and 8 need, since they price the manufacturer's liability.
+- **What it costs the buyer** if the claim falls *outside* cover — a retail pack, retail labour, and Danish VAT on both. This is what section 7 needs, since that is the loss the warranty protects against.
+
+The second is materially larger than the first, so they are carried as separate parameters: `severity_maker_dkk` at `r fmt_dkk(params$severity_maker_dkk)` DKK and `severity_buyer_dkk` at `r fmt_dkk(params$severity_buyer_dkk)`.
+
+Neither is quoted, and the buyer-side figure deserves its reasoning set out, because **the verdict now turns on it more than on anything else**. Three considerations pull in different directions:
+
+- **A new pack at Danish retail is dear.** Plausibly `r fmt_dkk(150000)` DKK before labour, and VAT sits on top of both. That argues for a figure well above the trade cost.
+- **But the guarantee does not deliver a new pack.** Toyota's obligation is to restore capacity to *above* `r fmt_pct(params$soh_threshold, 0)`, not to as-new. A remanufactured pack that merely clears the threshold discharges it. So what the cover is worth to the buyer is the cost of getting back over the line, which need not be a full retail replacement — and by the same token the maker's cost is lower again.
+- **And the claim, if it comes, is years away.** At `r fmt_km(my$rate)` km/yr the mean crossing inside the gap window falls in year `r fmt_num(buyer_gap$t_bar[buyer_gap$rate == my$rate & buyer_gap$calib == "B"], 1)`. Applying the `r fmt_pct(params$severity_decline, 0)` real decline, a pack costing X today costs about `r fmt_pct(0.92^buyer_gap$t_bar[buyer_gap$rate == my$rate & buyer_gap$calib == "B"], 0)` of X by then. The decline assumption is doing as much work as the level.
+
+`r fmt_dkk(params$severity_buyer_dkk)` DKK is a deliberate middle: above the trade figure, below a full retail replacement, on the reasoning that restoring to threshold costs less than fitting new. Section 7.9 brackets it from `r fmt_dkk(min(num(params$severity_buyer_sensitivity)))` to `r fmt_dkk(max(num(params$severity_buyer_sensitivity)))` DKK and gives the level at which the verdict turns. **A written quote from a Danish dealer for an out-of-warranty replacement would settle the single most load-bearing number in the note** — and it is worth asking specifically what they would fit: a new pack, or a reconditioned one to threshold.
+
+**Service pricing.** Toyota's Danish tariff is sourced from the Toyota Køge price calculator (retrieved 2 September 2026): `r fmt_dkk(params$service_toyota_small_dkk)` DKK for a *lille service* at odd multiples of the `r fmt_km(params$increment_km)` km interval and `r fmt_dkk(params$service_toyota_large_dkk)` DKK for a *stort service* at even multiples, so an owner alternates. The model enumerates those visits individually, at their own prices, rather than working from an average.
+
+**Subaru's tariff is sourced from a dealer quote of 3 September 2026** — `r fmt_num(params$service_subaru_small_dkk, 2)` / `r fmt_num(params$service_subaru_large_dkk, 2)` DKK on the same alternating pattern — with one important limitation: it runs only to `r fmt_km(params$subaru_quoted_to_km)` km, which at the buyer's mileage is the first five of twenty visits. Section 7.4 shows how much of the answer rests on extrapolating the rest, and how little it would take to overturn it.
+
+**No independent quote has been obtained**, which remains the binding unknown for the other scenario. Section 7.5 inverts the question and reports what an independent would have to charge for the answer to change, converting the remaining guess into a threshold a single phone call can test.
+
+### 1.2 The discount rate, and the direction of the risk adjustment
+
+**Severity** — the insurance term for the size of a single claim once one occurs, as against **frequency**, the probability that one occurs at all — is stated here in today's DKK and declines at `r fmt_pct(params$severity_decline, 0)` **real** per year as pack prices fall. The cash flow being discounted is therefore real, and the discount rate must be real to match. Applying a nominal rate to it would deflate the flow twice.
+
+Danish 10-year government yields were around 3.0–3.1% nominal in mid-August 2026 (52-week range roughly 2.41–3.12%). With long-run inflation expectations anchored near 2%, that implies a real 10-year rate near **1.0%**. The default of `r fmt_pct(params$discount_real, 0)` real used here is therefore deliberately conservative; `r fmt_pct(min(discount_grid), 0)` is closer to market-implied. Both are shown throughout.
+
+The second point concerns the *direction* of the risk adjustment, which is easy to get backwards here. This is an insurance payoff accruing to a single, undiversified household. The correct treatment of an undiversifiable, lumpy, five-figure tail is **a low (near risk-free) discount rate plus a positive risk loading on the expected value** — a **risk loading** being the margin an insurer adds above the expected claim cost as the price of bearing variance, and the same margin a risk-averse buyer should be willing to pay to shed it. Reaching for an elevated discount rate instead gets the sign wrong: raising the discount rate *reduces* the computed value of protection against a risk the buyer cannot pool, which is the opposite of what risk aversion implies. Every PV below is an expected value with no loading applied, and is therefore a **lower bound** on what a risk-averse buyer should be willing to pay.
+
+---
+
+## 2. The two contracts
+
+```{r contracts}
+tibble(
+  ` ` = c(
+    "Base battery guarantee", "Increment per health check", "Capacity threshold",
+    "Age ceiling", "Mileage ceiling", "Further limit", "Transferable"
+  ),
+  Toyota = c(
+    paste0(params$base_years, " yr / ", fmt_km(params$base_km), " km"),
+    paste0("1 yr **or ", fmt_km(params$increment_km), " km**, whichever first"),
+    fmt_pct(params$soh_threshold, 0),
+    paste0(params$age_ceiling, " yr"),
+    paste0("**", fmt_km(params$toyota_ceiling_km), " km**"),
+    "—",
+    "Yes"
+  ),
+  `Subaru (Nordic, MY2026+)` = c(
+    paste0(params$base_years, " yr / ", fmt_km(params$base_km), " km"),
+    paste0("1 yr **or ", fmt_km(params$increment_km), " km**, whichever first"),
+    fmt_pct(params$soh_threshold, 0),
+    paste0(params$age_ceiling, " yr"),
+    paste0("**", fmt_km(params$subaru_ceiling_km), " km**"),
+    paste0("No extension granted past ", fmt_km(params$subaru_no_grant_km), " km"),
+    "Yes — follows the car"
+  )
+) |>
+  show_table(align = "lll")
+```
+
+The mechanisms are structurally identical. Same base, same accrual rule, same threshold, same age ceiling. **One number differs**, by a factor of `r fmt_num(params$toyota_ceiling_km / params$subaru_ceiling_km, 0)`.
+
+That is what makes the comparison worth anything: with the hardware and the contract architecture both held fixed, the mileage ceiling is the only free variable, and the two firms set it two-thirds of an order of magnitude apart.
+
+```{r hv-assumption, include=FALSE}
+# If Subaru's service-activated extension did NOT cover the traction battery,
+# the Subaru side would fall back to the base term on both axes.
+gap_no_hv <- function(rate) {
+  map_dbl(names(cal), \(k) gap_value(
+    rate, cal[[k]]$a, cal[[k]]$b, cal[[k]]$sd_unit, d_crit,
+    params$age_ceiling, params$toyota_ceiling_km,
+    subaru_ceiling_km = params$base_km,
+    params$severity_buyer_dkk, params$severity_decline, params$discount_real,
+    params$repair_worthy, subaru_years = params$base_years
+  )$pv_dkk) |>
+    set_names(names(cal))
+}
+
+hv_mine <- gap_no_hv(my$rate)
+hv_median <- gap_no_hv(params$med_rate)
+```
+
+> **Load-bearing assumption: the extension covers the traction battery.** Subaru's `r params$age_ceiling`-year / `r fmt_km(params$subaru_ceiling_km)` km service-activated warranty is taken throughout to include the 400 V traction battery at the `r fmt_pct(params$soh_threshold, 0)` capacity threshold, on the terms of the Subaru Norge release of 16 January 2026 (Appendix C). If instead it covered only the rest of the vehicle, the Subaru's battery cover would revert to the base `r params$base_years` yr / `r fmt_km(params$base_km)` km — and the consequence is very unevenly distributed.
+>
+> At high mileage it barely matters: the mileage ceiling binds long before either age limit, so at `r fmt_km(my$rate)` km/yr the gap would widen only from `r rng(my$gap_full)` to `r rng(hv_mine)` DKK. **Where it matters is at low mileage, and there it is decisive rather than marginal.** Below `r fmt_km(gap_opens_at)` km/yr the contracts are identical *only because* Subaru's battery cover is assumed to run to `r params$age_ceiling` years. Strip that away and the Subaru's cover ends at year `r params$base_years` while the Toyota's runs to `r params$age_ceiling`, opening a gap for every driver however slowly they drive: at the median `r fmt_km(params$med_rate)` km/yr it would be worth `r rng(hv_median)` DKK, against exactly zero as modelled.
+>
+> So the finding that the two contracts are indistinguishable for most private buyers rests entirely on this one clause. It is the first thing to confirm in the Danish *garantibetingelser*.
+
+> **Unmodelled clause.** Subaru's "no extension granted past `r fmt_km(params$subaru_no_grant_km)` km" is *not* in the model, which treats the Subaru ceiling as a clean `r fmt_km(params$subaru_ceiling_km)` km. The clause restricts when an extension may be *granted*, not how far a granted extension runs, so an owner presenting at `r fmt_km(params$subaru_no_grant_km)` km still reaches `r fmt_km(params$subaru_ceiling_km)` km. It bites only for owners who first present between `r fmt_km(params$subaru_no_grant_km)` and `r fmt_km(params$subaru_ceiling_km)` km. The effect is small and works against Subaru, so every Subaru figure below is mildly generous to Subaru — i.e. the computed contract gap is a **conservative** estimate.
+
+### 2.1 Toyota runs two battery covers, not one
+
+Toyota covers the battery under two separate guarantees, with different terms and different triggers. Only one of them is what this note is about.
+
+```{r two-covers}
+tibble(
+  Cover = c("**Fejl på batteriet** (defect)", "**Kapacitet på batteriet** (capacity)"),
+  `Base term` = c("5 yr / 100,000 km", paste0(params$base_years, " yr / ",
+                                              fmt_km(params$base_km), " km")),
+  Trigger = c("Battery fault; replaced to at least original capacity",
+              paste0("State of health falls below ", fmt_pct(params$soh_threshold, 0))),
+  `Extended by health check?` = c("Yes", "Yes")
+) |>
+  show_table(align = "llll")
+```
+
+Both are extended by the same EV health check, at one year or `r fmt_km(params$increment_km)` km per check, to the same `r params$age_ceiling` yr / `r fmt_km(params$toyota_ceiling_km)` km ceiling. **This note models the capacity cover only**, which is the one that differs between the two makes and the one a mileage ceiling is about.
+
+The distinction is worth holding on to when reading other sources. Summaries of Toyota's EV battery warranty in the European press quote either term depending on which cover they have in view, and a description of "5 years / 100,000 km" for this platform is the defect cover rather than a shorter capacity guarantee.
+
+### 2.2 The increment rule is the operative mechanism
+
+Coverage does not extend in years. It extends in **1 year or `r fmt_km(params$increment_km)` km, whichever comes first** — a *rate* limiter, not merely a terminal cap. Coverage accrues at `r fmt_km(params$increment_km)` km per health check regardless of how fast the odometer turns. So the number of dealer visits needed to ride the coverage to any odometer $K$ is
+
+$$n(K) = \frac{K - `r fmt_km(params$base_km)`}{`r fmt_km(params$increment_km)`}$$
+
+```{r checks-table}
+tibble(cap_km = c(params$subaru_ceiling_km, 400000, params$toyota_ceiling_km)) |>
+  mutate(
+    `Target odometer` = c(
+      paste0(fmt_km(cap_km[1]), " km (Subaru ceiling)"),
+      paste0(fmt_km(cap_km[2]), " km"),
+      paste0(fmt_km(cap_km[3]), " km (Toyota ceiling)")
+    ),
+    `Extra checks` = fmt_num(
+      checks_required(cap_km, params$base_km, params$increment_km)
+    ),
+    `Total checks from zero` = fmt_num(
+      checks_required(cap_km, params$base_km, params$increment_km, from_zero = TRUE)
+    )
+  ) |>
+  select(-cap_km) |>
+  show_table()
+```
+
+The million kilometres is reachable. It costs **`r fmt_num(checks_to_toyota, 0)` trips to a Toyota dealer**, and to do it inside the `r params$age_ceiling`-year age ceiling requires averaging `r fmt_km(params$toyota_ceiling_km / params$age_ceiling)` km/yr — about `r fmt_num(checks_to_toyota / params$age_ceiling)` visits per year for a decade.
+
+---
+
+## 3. Actuarial framework
+
+### 3.1 Two-dimensional warranty region
+
+A warranty of this kind is **two-dimensional**: it expires on whichever of two clocks runs out first, age or odometer. Coverage is therefore the rectangle $\Omega = [0, T] \times [0, K]$ in (age, odometer) space, where $T$ is the age ceiling (`r params$age_ceiling` years) and $K$ the mileage ceiling. A claim is admissible only if *both* coordinates are still inside the rectangle at the moment the battery crosses the threshold.
+
+The notation, since it recurs throughout:
+
+- $X(t)$ is the **odometer reading at age $t$** — cumulative distance driven, the second coordinate of the rectangle. It is modelled as $X(t) = R \cdot t$: constant-rate driving, no seasonality or trend.
+- $R$ is the **random usage rate** in km/yr, a property of the *driver*, drawn once when the car is sold and fixed thereafter. It is the only source of cross-sectional variation in how the two clocks race each other.
+- $g(r)$ is the **density of $R$** across the buyer population — here lognormal with median `r fmt_km(params$med_rate)` km/yr. Lower-case $r$ is a particular realised value of $R$, i.e. one specific driver's annual mileage.
+- $W(r)$ is the **effective warranty term in years** for a driver who does $r$ km/yr.
+
+The last is the object that does the work. For a *given* driver the odometer clock is no longer random — it is a known linear function of age — so the two-dimensional rectangle collapses to a single number, the age at which whichever ceiling binds first is reached:
+
+$$W(r) = \min\left(T, \frac{K}{r}\right)$$
+
+Read directly: a driver reaches the mileage ceiling after $K/r$ years, and the age ceiling after $T$ years, and the warranty ends at the earlier of the two. There is a kink at $r = K/T$. Below that rate the mileage ceiling is never reached inside $T$ years and the contract is purely an age-limited one — the value of $K$ is then completely irrelevant to that buyer. Above it, the mileage ceiling binds strictly first and $T$ becomes irrelevant instead. **This kink is the entire subject of the note**: Toyota and Subaru differ only in $K$, so they differ only for drivers above their respective kinks.
+
+```{r fig-region, fig.height=5.4}
+y_max <- params$toyota_ceiling_km * 1.04
+rates_ray <- c(15000, 25000, 40000, 60000,
+               params$toyota_ceiling_km / params$age_ceiling)
+
+rays <- tibble(r = rates_ray) |>
+  mutate(t_end = pmin(params$age_ceiling, y_max / r), x_end = r * t_end)
+
+# Mark an exit only where the MILEAGE ceiling binds; below the kink rate the
+# driver leaves on the age axis, not the odometer axis.
+exits <- tibble(r = rates_ray) |>
+  mutate(
+    sub_binds = r > params$subaru_ceiling_km / params$age_ceiling,
+    toy_binds = r >= params$toyota_ceiling_km / params$age_ceiling,
+    t_sub = params$subaru_ceiling_km / r,
+    t_toy = params$toyota_ceiling_km / r
+  )
+
+ggplot() +
+  annotate("rect", xmin = 0, xmax = params$age_ceiling,
+           ymin = params$subaru_ceiling_km, ymax = params$toyota_ceiling_km,
+           fill = pal[["toyota"]], alpha = 0.13) +
+  annotate("rect", xmin = 0, xmax = params$age_ceiling,
+           ymin = 0, ymax = params$subaru_ceiling_km,
+           fill = pal[["neutral"]], alpha = 0.16) +
+  annotate("segment", x = 0, xend = params$age_ceiling,
+           y = params$subaru_ceiling_km, yend = params$subaru_ceiling_km,
+           colour = pal[["subaru"]], linewidth = 0.8) +
+  annotate("segment", x = 0, xend = params$age_ceiling,
+           y = params$toyota_ceiling_km, yend = params$toyota_ceiling_km,
+           colour = pal[["toyota"]], linewidth = 0.8) +
+  annotate("segment", x = params$age_ceiling, xend = params$age_ceiling,
+           y = 0, yend = params$toyota_ceiling_km,
+           colour = "grey40", linewidth = 0.5, linetype = "22") +
+  geom_segment(data = rays, aes(x = 0, y = 0, xend = t_end, yend = x_end),
+               colour = pal[["neutral"]], linewidth = 0.4) +
+  geom_point(data = filter(exits, sub_binds),
+             aes(x = t_sub, y = params$subaru_ceiling_km),
+             colour = pal[["subaru"]], size = 2.1) +
+  geom_point(data = filter(exits, toy_binds),
+             aes(x = t_toy, y = params$toyota_ceiling_km),
+             colour = pal[["toyota"]], size = 2.1) +
+  geom_text(data = rays, aes(x = t_end, y = x_end, label = lab_km(r)),
+            hjust = -0.12, vjust = 0.4, size = 2.9, colour = pal[["neutral"]]) +
+  annotate("text", x = 0.3, y = params$toyota_ceiling_km * 0.66,
+           label = "TOYOTA ONLY\nthe contract gap", hjust = 0, size = 3.3,
+           colour = pal[["toyota"]], lineheight = 1, fontface = "bold") +
+  # Sits under the slowest ray, in the only part of the lower band no ray
+  # crosses. The age-ceiling line needs no label: the x axis already reads T.
+  annotate("text", x = params$age_ceiling * 0.63,
+           y = params$subaru_ceiling_km * 0.22,
+           label = "COVERED BY BOTH", hjust = 0, size = 3.1, colour = "grey20",
+           fontface = "bold") +
+  scale_y_continuous(labels = lab_km, expand = expansion(mult = c(0, 0.02))) +
+  scale_x_continuous(breaks = scales::breaks_width(2),
+                     expand = expansion(mult = c(0.01, 0.10))) +
+  coord_cartesian(xlim = c(0, params$age_ceiling * 1.13), ylim = c(0, y_max)) +
+  labs(
+    title = "The warranty region, and which drivers reach its edges",
+    subtitle = "Cover is the rectangle [0, T] x [0, K]; a driver traces the ray X(t) = r t. Rays labelled in km/yr.",
+    x = "Vehicle age (years)", y = "Odometer (km)",
+    caption = paste0(
+      "Dots mark where the mileage ceiling ends cover: vermillion = Subaru, blue = Toyota. Drivers below\n",
+      lab_km(gap_opens_at), " km/yr never enter the upper band, so for them the two contracts are identical. The ",
+      lab_km(params$toyota_ceiling_km / params$age_ceiling), " km/yr\n",
+      "ray is the only one that reaches Toyota's ceiling inside the age limit, and it arrives exactly at the corner."
+    )
+  ) +
+  theme_note()
+```
+
+Expected cost per unit sold then follows by averaging the conditional claim probability over the population of drivers — the classical form for two-dimensional warranties, due to Blischke and Murthy:
+
+$$E[C] = c \int_0^\infty F\!\left(W(r) \mid r\right) g(r)\, dr$$
+
+Here $c$ is the severity (cost per claim) and $F(\cdot \mid r)$ the probability that a driver of type $r$ has crossed the capacity threshold by a given age. So $F(W(r) \mid r)$ is the probability that *this* driver claims before *their* warranty expires, and the integral is its population average. In insurance vocabulary the result is the **pure premium** — the expected claim cost per policy, before any expense or profit margin.
+
+Since $K$ only matters above the kink, the mileage cap can bind only for the fraction of the fleet driving faster than $K/T$. That fraction is worth tabulating, because it turns out to be small:
+
+```{r truncation-table}
+# Always show the two contract ceilings and the base, whatever the cap grid is.
+trunc_rows <- sort(unique(c(
+  params$base_km, params$subaru_ceiling_km, params$toyota_ceiling_km,
+  cap_grid[cap_grid > params$base_km & cap_grid < params$toyota_ceiling_km]
+)))
+
+tibble(K = trunc_rows) |>
+  mutate(
+    kink = K / params$age_ceiling,
+    share = fleet_truncated(K, params$age_ceiling,
+                            params$med_rate, params$sdlog_rate)
+  ) |>
+  transmute(
+    `K (km)` = fmt_km(K),
+    `Kink rate K/T (km/yr)` = fmt_km(kink),
+    `P(R > K/T)` = fmt_pct(share, 2)
+  ) |>
+  show_table()
+```
+
+```{r truncation-reads, include=FALSE}
+# Computed rather than looked up, so the prose survives any cap grid.
+trunc_at <- \(k) fleet_truncated(k, params$age_ceiling,
+                                 params$med_rate, params$sdlog_rate)
+
+# Mid-range comparator for the non-linearity point: the grid entry closest to
+# the geometric midpoint of the two ceilings.
+mid_cap <- cap_grid[which.min(abs(
+  log(cap_grid) - mean(log(c(params$subaru_ceiling_km, params$toyota_ceiling_km)))
+))]
+```
+
+**Reading the table.** The middle column is the kink rate: drive faster than this and the mileage ceiling bites before the age ceiling. The right column is the share of the fleet that does.
+
+The base contract's `r fmt_km(params$base_km)` km ceiling constrains `r fmt_pct(trunc_at(params$base_km), 0)` of drivers — a genuinely binding limit for a large share of the fleet, which is what makes the extension mechanism worth having at all. Subaru's `r fmt_km(params$subaru_ceiling_km)` km ceiling still binds for `r fmt_pct(trunc_at(params$subaru_ceiling_km), 0)`: about one buyer in `r fmt_num(1 / trunc_at(params$subaru_ceiling_km), 0)` drives fast enough to hit it inside `r params$age_ceiling` years. Toyota's `r fmt_km(params$toyota_ceiling_km)` km ceiling binds for `r fmt_pct(trunc_at(params$toyota_ceiling_km), 2)` — about one buyer in `r fmt_dkk(1 / trunc_at(params$toyota_ceiling_km))` — since reaching it inside the age ceiling means averaging `r fmt_km(params$toyota_ceiling_km / params$age_ceiling)` km/yr for a decade.
+
+```{r fig-tail, fig.height=4.6}
+kinks <- tibble(
+  who = c(paste0("Base ", fmt_km(params$base_km), " km"),
+          paste0("Subaru ", fmt_km(params$subaru_ceiling_km), " km"),
+          paste0("Toyota ", fmt_km(params$toyota_ceiling_km), " km")),
+  K = c(params$base_km, params$subaru_ceiling_km, params$toyota_ceiling_km),
+  col = c("grey30", pal[["subaru"]], pal[["toyota"]])
+) |>
+  mutate(
+    kink = K / params$age_ceiling,
+    share = trunc_at(K)
+  )
+
+r_hi <- max(kinks$kink) * 1.18
+y_floor <- min(kinks$share) / 3
+
+# Labels sit as a key in the empty upper-right rather than beside their points:
+# on a log scale the curve descends through any offset generous enough to clear
+# the point itself.
+kinks <- kinks |>
+  mutate(key_x = r_hi * 0.47,
+         key_y = 10^seq(log10(0.85), log10(0.85) - 1.3, length.out = 3))
+
+tibble(r = seq(r_hi * 0.035, r_hi, length.out = 600)) |>
+  mutate(share = plnorm(r, log(params$med_rate), params$sdlog_rate,
+                        lower.tail = FALSE)) |>
+  ggplot(aes(r, share)) +
+  geom_line(linewidth = 0.85, colour = pal[["neutral"]]) +
+  geom_segment(data = kinks, aes(x = kink, xend = kink, y = y_floor, yend = share),
+               colour = kinks$col, linetype = "22", linewidth = 0.5) +
+  geom_point(data = kinks, aes(x = kink, y = share), colour = kinks$col,
+             size = 2.5) +
+  geom_point(data = kinks, aes(x = key_x, y = key_y), colour = kinks$col,
+             size = 2.5) +
+  geom_text(data = kinks,
+            aes(x = key_x + r_hi * 0.026, y = key_y,
+                label = paste0(who, ": ", percent(share, accuracy = 0.01))),
+            hjust = 0, colour = kinks$col, size = 2.95) +
+  scale_y_log10(labels = percent_format(accuracy = 0.01),
+                limits = c(y_floor, 1.6)) +
+  scale_x_continuous(labels = lab_km, expand = expansion(mult = c(0.03, 0.04))) +
+  labs(
+    title = "The share of drivers a mileage ceiling can possibly constrain",
+    subtitle = "P(R > K/T): drivers fast enough to reach the ceiling inside the age limit",
+    x = "Kink rate K/T (km/yr)", y = "Share of fleet (log scale)",
+    caption = paste0(
+      "Vertical scale is logarithmic. Raising the ceiling from ",
+      lab_km(params$subaru_ceiling_km), " to ", lab_km(params$toyota_ceiling_km),
+      " km, a factor of ",
+      fmt_num(params$toyota_ceiling_km / params$subaru_ceiling_km, 0),
+      ", cuts the constrained\nshare by a factor of about ",
+      fmt_num(trunc_at(params$subaru_ceiling_km) / trunc_at(params$toyota_ceiling_km), 0),
+      ". The lognormal tail thins far faster than the ceiling rises, which is why the\n",
+      "marketing difference between the two numbers and their actuarial difference diverge so sharply."
+    )
+  ) +
+  theme_note()
+```
+
+Two things follow, and they set up everything after.
+
+1. **The fall-off is brutally non-linear.** Going from `r fmt_km(params$subaru_ceiling_km)` to `r fmt_km(mid_cap)` km takes the constrained share from `r fmt_pct(trunc_at(params$subaru_ceiling_km), 0)` to `r fmt_pct(trunc_at(mid_cap), 0)`. Going on from `r fmt_km(mid_cap)` to `r fmt_km(params$toyota_ceiling_km)` takes it from `r fmt_pct(trunc_at(mid_cap), 0)` to essentially nothing. This is the lognormal tail thinning out, and it means the *marketing* difference between the two ceilings (a factor of `r fmt_num(params$toyota_ceiling_km / params$subaru_ceiling_km, 0)`) has almost nothing to do with the *population* difference.
+2. **This is an upper bound on how much the cap can matter, not an estimate of it.** The table counts drivers who *reach* the ceiling, not drivers who reach it *and* have a degraded battery. The second condition is much rarer, and section 4 shows the two interact: if a pack that is going to fail on throughput fails before the odometer reaches $K$ anyway, then raising $K$ removes no liability at all, however many drivers get there.
+
+### 3.2 Degradation, not hazard
+
+Reliability work usually models failure through a **hazard rate** — the same object as in duration econometrics, the instantaneous exit rate conditional on survival so far — and usually assumes it is Weibull, i.e. a power function of age. That is the wrong instrument here. A hazard describes an event that *strikes* a still-functioning unit at random; a battery warranty claim is not that. Capacity declines smoothly and monotonically, and the claim is triggered when the decline crosses a contractual line. The right object is therefore a **first-passage time** — the age at which a continuously observed process first hits a barrier — which is a deterministic function of the degradation path rather than a random arrival on top of it.
+
+The distinction matters practically, not just semantically. Under a hazard model the mileage and age axes would be roughly interchangeable ways of buying exposure. Under a first-passage model they are not: cumulative distance *drives* the state variable, so the odometer is on the causal path and age is only partly so. That asymmetry is the entire content of section 4.
+
+Capacity loss decomposes into calendar and throughput terms:
+
+$$L(t, x) = Z \left( a\sqrt{t} + b\,x \right), \qquad x = r t$$
+
+The $\sqrt{t}$ calendar term follows from SEI-layer growth; the linear throughput term from cycle count. $Z$ is a unit-level multiplicative heterogeneity factor, lognormal with unit mean, capturing cell-lot and duty-cycle variation.
+
+Setting $L = D_{\text{crit}} = `r d_crit`$ and substituting $u = \sqrt{t}$ gives a quadratic in $u$:
+
+$$b r u^2 + a u - \frac{D_{\text{crit}}}{Z} = 0
+\quad\Longrightarrow\quad
+t_{\text{fail}} = \left[\frac{-a + \sqrt{a^2 + 4 b r D_{\text{crit}} / Z}}{2 b r}\right]^{2}$$
+
+**This note does not simulate that root.** Conditional on a fixed usage rate, failure by time $t$ is a statement about $Z$ alone — it occurs iff $Z \ge D_{\text{crit}} / (a\sqrt{t} + b r t)$ — and since $Z$ is lognormal the conditional failure distribution is available in closed form:
+
+$$F(t \mid r) = \Phi\!\left(\frac{\log\left(a\sqrt{t} + b r t\right) - \log D_{\text{crit}} - \sigma^2/2}{\sigma}\right)$$
+
+Everything at the buyer level uses this directly, and fleet-level results mix it over $g(r)$ by numerical integration. This is exact and instant, and it removes Monte Carlo noise — which matters, because calibration A produces gap probabilities down to ~$10^{-4}$, where a million draws is not enough to resolve the answer to the precision the tables report.
+
+Two richer specifications are standard in the degradation literature if the deterministic path above is felt to be too rigid. Both replace "a fixed path scaled by a random factor" with "a genuinely random path". The **gamma process** accumulates strictly positive increments, which is the natural choice for wear that cannot undo itself:
+
+$$P(T_D \le t) = \frac{\Gamma\!\left(\alpha t^{z},\, \beta D_{\text{crit}}\right)}{\Gamma\!\left(\alpha t^{z}\right)}$$
+
+A Wiener process with drift — Brownian motion with a trend, the workhorse of financial modelling — gives the inverse Gaussian first-passage density instead. It is analytically friendlier, but its increments can be negative, which here would mean a pack spontaneously regaining capacity. Neither is used below: the closed form above is exact for the stated model, and the additional process risk would be calibrated on data this note does not have.
+
+### 3.3 Persistency is indexed on distance, not time
+
+**Persistency** is the insurance term for the tendency of a policy to stay in force, and **lapse** for its termination because the holder stopped doing what the contract required — here, missing a health check. It matters because a lapsed policy costs the insurer nothing: expected claims must be multiplied by the probability the cover is still alive when the claim would fall due.
+
+The unusual feature of this contract is what the lapse process is indexed on. A conventional policy lapses when a premium is missed, so persistency runs on the calendar. Here, coverage is extended per health check and checks fall due every `r fmt_km(params$increment_km)` km, so lapse runs on the **odometer**. A high-mileage driver faces the lapse hazard more often per year than a low-mileage one, and — because the ceiling is fixed in kilometres — faces exactly the same number of checks to reach it.
+
+#### Does a missed check destroy the cover, or only suspend it?
+
+Everything about the size of the lapse effect turns on this, and the two readings are worlds apart.
+
+- **Permanent forfeiture.** One missed check ends the cover for good. Survival then decays geometrically in the number of checks, $p(x) = \pi^{\max(0,\ (x - `r fmt_km(params$base_km)`)/`r fmt_km(params$increment_km)`)}$, and over the `r fmt_num(extra_to_toyota, 0)` at-risk checks Toyota's ceiling demands, even high compliance compounds into near-certain loss.
+- **Suspension and reinstatement.** A missed check suspends cover until the next completed one, which starts a fresh term. The probability of being covered *when a claim arrives* is then just $\pi$ — the chance the current window's check was done — regardless of how many were missed earlier.
+
+**Toyota Denmark's published terms point to the second.** The battery page says a new guarantee can be activated by a health check *"helt indtil bilen fylder `r params$age_ceiling` år eller har kørt 1 mio km"* — at any point up to the ceiling, not only in unbroken sequence. The Relax conditions are explicit that a missed service *"diskvalificerer dette dig ikke til fremtidig dækning"*, with cover resuming 30 days after the next completed service. The note therefore uses **`r params$lapse_mode`** as its default, and reports both.
+
+```{r persistency-table}
+expand_grid(pi_check = c(0.98, 0.95, 0.90),
+            mode = c("reinstatable", "permanent")) |>
+  mutate(
+    sub = map2_dbl(pi_check, mode, \(p, m) coverage_held(
+      params$subaru_ceiling_km, p, params$base_km, params$increment_km, m)),
+    toy = map2_dbl(pi_check, mode, \(p, m) coverage_held(
+      params$toyota_ceiling_km, p, params$base_km, params$increment_km, m))
+  ) |>
+  transmute(
+    `pi per check` = fmt_num(pi_check, 2),
+    Regime = mode,
+    !!paste0("Covered at ", fmt_km(params$subaru_ceiling_km), " km") := fmt_num(sub, 3),
+    !!paste0("Covered at ", fmt_km(params$toyota_ceiling_km), " km") := fmt_num(toy, 3)
+  ) |>
+  show_table()
+```
+
+The contrast is the whole point. Under permanent forfeiture Toyota's ceiling is largely self-defeating — at $\pi = 0.95$ barely `r fmt_pct(coverage_held(params$toyota_ceiling_km, 0.95, params$base_km, params$increment_km, "permanent"), 1)` of owners still hold cover at the million, because the decay compounds over `r fmt_num(extra_to_toyota, 0)` at-risk checks against Subaru's `r fmt_num(extra_to_subaru)`. Under reinstatement the asymmetry vanishes entirely: both makes sit at $\pi$, and the number of checks stops mattering.
+
+> **Which checks are at risk.** Under the permanent reading the $\max(0, \cdot)$ carries more weight than it looks. Counting *all* checks from zero instead would give `r fmt_num(0.98^(params$subaru_ceiling_km / params$increment_km), 3)` and `r fmt_num(0.98^(params$toyota_ceiling_km / params$increment_km), 3)` at $\pi = 0.98$, against `r fmt_num(coverage_held(params$subaru_ceiling_km, 0.98, params$base_km, params$increment_km, "permanent"), 3)` and `r fmt_num(coverage_held(params$toyota_ceiling_km, 0.98, params$base_km, params$increment_km, "permanent"), 3)` — a large difference, and the wrong one. The from-zero count conflates two distinct things: failing a check the contract required, which affects cover, and never having been a dealer-servicing customer in the first place, which does not.
+
+Expected claim cost then carries the lapse factor inside the integral:
+
+$$E[C] = c \int_0^\infty \int_0^{W(r)} p(rt)\, f(t \mid r)\, dt\ g(r)\, dr$$
+
+### 3.4 Competing risks
+
+A **competing risks** setting — the same construction as in duration econometrics — is one where a unit can exit through more than one route and only the first exit is observed. Here there are two: an outright hardware failure (cell short, BMS fault, thermal event), and the gradual capacity decline modelled above. Either triggers a claim, so claim-free survival requires avoiding both:
+
+$$S(t) = \exp\left(-\int_0^t h_{\text{hard}}(u)\,du\right) \cdot P\!\left(D(t) < D_{\text{crit}}\right)$$
+
+$S(t)$ is the survival function — the probability of reaching age $t$ with no claim of either kind. It is written $S$ rather than the conventional $R$ for reliability to avoid colliding with the usage rate $R$ of section 3.1.
+
+The hard-failure leg is Weibull with shape $\beta < 1$, meaning a hazard that *falls* with age — **infant mortality**, where manufacturing defects surface early and a unit that survives its first years is safer than a new one.
+
+Toyota's Danish terms give this leg its own contract: the *"Fejl på batteriet"* cover of 5 yr / 100,000 km (section 2.1), which is shorter than the capacity cover rather than co-extensive with it. That does not change the conclusion. Infant-mortality failures land overwhelmingly inside the first years; the defect cover is extended by the same health check on the same terms; and Subaru's arrangement is structurally alike. The hard-failure leg therefore still cannot differentiate the two contracts, and is dropped from everything below. Only the degradation leg is modelled — but the reason is the shape of the hazard, not the length of the term.
+
+---
+
+## 4. The central result: when does a mileage cap bind?
+
+Define $x_{\text{crit}}$ as the odometer at which the degradation path crosses the threshold. Because loss is monotone in cumulative throughput, a vehicle claims at approximately $x_{\text{crit}}$ regardless of how fast it got there, once the throughput term dominates the calendar term. Hence:
+
+$$\boxed{K \text{ binds} \iff K < x_{\text{crit}}}$$
+
+```{r xcrit}
+tibble(calib = names(cal)) |>
+  transmute(
+    Calibration = map_chr(calib, \(k) cal[[k]]$label),
+    `x_crit (km)` = map_chr(calib, \(k) fmt_km(round(
+      x_crit(cal[[k]]$calendar_loss_10y, cal[[k]]$km_crit_pure, d_crit)
+    ))),
+    `Toyota ceiling binds?` = map_chr(calib, \(k) ifelse(
+      params$toyota_ceiling_km <
+        x_crit(cal[[k]]$calendar_loss_10y, cal[[k]]$km_crit_pure, d_crit),
+      "yes", "no"
+    )),
+    `Subaru ceiling binds?` = map_chr(calib, \(k) ifelse(
+      params$subaru_ceiling_km <
+        x_crit(cal[[k]]$calendar_loss_10y, cal[[k]]$km_crit_pure, d_crit),
+      "yes", "no"
+    ))
+  ) |>
+  show_table()
+```
+
+```{r fig-xcrit, fig.width=8.2, fig.height=5}
+# Must contain ref_rate, or the highlighted median path and its heterogeneity
+# band silently drop out of the figure while the caption still describes them.
+rates_deg <- sort(unique(c(
+  params$med_rate, params$ref_rate, buyer_rates[buyer_rates > gap_opens_at]
+)))
+stopifnot(params$ref_rate %in% rates_deg)
+
+x_seq <- seq(1000, params$toyota_ceiling_km * 1.02, length.out = 500)
+
+deg <- expand_grid(calib = names(cal), r = rates_deg, x = x_seq) |>
+  mutate(
+    a = map_dbl(calib, \(k) cal[[k]]$a),
+    b = map_dbl(calib, \(k) cal[[k]]$b),
+    sd_unit = map_dbl(calib, \(k) cal[[k]]$sd_unit),
+    path = a * sqrt(x / r) + b * x,
+    med = path * exp(-sd_unit^2 / 2),
+    lab = map_chr(calib, \(k) cal[[k]]$label)
+  )
+
+band <- deg |>
+  filter(r == params$ref_rate) |>
+  mutate(
+    lo = path * qlnorm(0.10, -sd_unit^2 / 2, sd_unit),
+    hi = path * qlnorm(0.90, -sd_unit^2 / 2, sd_unit)
+  )
+
+xcrit_tbl <- tibble(calib = names(cal)) |>
+  mutate(
+    lab = map_chr(calib, \(k) cal[[k]]$label),
+    xc = map_dbl(calib, \(k) x_crit(cal[[k]]$calendar_loss_10y,
+                                    cal[[k]]$km_crit_pure, d_crit))
+  )
+
+y_top <- d_crit * 1.5
+
+ggplot(deg, aes(x, med)) +
+  geom_ribbon(data = band, aes(ymin = lo, ymax = hi), fill = pal[["neutral"]],
+              alpha = 0.16) +
+  geom_vline(data = xcrit_tbl, aes(xintercept = xc), colour = "grey45",
+             linetype = "22", linewidth = 0.5) +
+  geom_vline(xintercept = params$subaru_ceiling_km, colour = pal[["subaru"]],
+             linewidth = 0.8) +
+  geom_vline(xintercept = params$toyota_ceiling_km, colour = pal[["toyota"]],
+             linewidth = 0.8) +
+  geom_hline(yintercept = d_crit, linetype = "22", colour = "grey15",
+             linewidth = 0.5) +
+  geom_line(aes(group = r), colour = pal[["neutral"]], linewidth = 0.45,
+            alpha = 0.8) +
+  geom_line(data = band, aes(x, med), colour = "black", linewidth = 0.9) +
+  geom_text(data = xcrit_tbl, aes(x = xc, y = y_top * 0.955, label = "x_crit"),
+            hjust = 1.15, size = 2.9, colour = "grey40") +
+  annotate("text", x = params$subaru_ceiling_km, y = y_top * 0.955,
+           label = "Subaru ", hjust = 1, size = 2.9, colour = pal[["subaru"]]) +
+  annotate("text", x = params$toyota_ceiling_km, y = y_top * 0.955,
+           label = " Toyota", hjust = 1.05, size = 2.9, colour = pal[["toyota"]]) +
+  annotate("text", x = params$toyota_ceiling_km * 0.02, y = d_crit,
+           label = "claim threshold", vjust = -0.65, hjust = 0, size = 2.9,
+           colour = "grey15") +
+  facet_wrap(~lab) +
+  scale_x_continuous(labels = label_comma(scale = 1e-3, suffix = "k"),
+                     breaks = scales::breaks_width(params$toyota_ceiling_km / 4)) +
+  coord_cartesian(ylim = c(0, y_top)) +
+  labs(
+    title = "A mileage ceiling binds only if it sits below x_crit",
+    subtitle = paste0("Capacity loss against odometer, for drivers at ",
+                      lab_km(min(rates_deg)), " to ", lab_km(max(rates_deg)), " km/yr"),
+    x = "Odometer (km)", y = "Capacity loss (percentage points)",
+    caption = paste0(
+      "Thin grey lines: median path at each usage rate. They nearly coincide, so a pack crosses the threshold at\n",
+      "roughly the same odometer however fast it got there. Bold line and band: median and 10th to 90th percentile\n",
+      "of unit heterogeneity Z at ", lab_km(params$ref_rate), " km/yr. Subaru's ceiling cuts through the paths well before they cross;\n",
+      "Toyota's sits beyond the point where every throughput-driven claim has already happened, so it censors nothing."
+    )
+  ) +
+  theme_note()
+```
+
+Above $x_{\text{crit}}$ the cap is not a weak constraint — it is a **null** constraint. Every vehicle that would ever claim on throughput has already claimed before reaching the cap. The mileage axis stops being a liability limiter the moment it exceeds the pack's own throughput life.
+
+Toyota placed their ceiling above $x_{\text{crit}}$ on both calibrations; Subaru placed theirs well below on both.
+
+---
+
+## 5. Calibration
+
+The degradation model has no published fade curve to fit, so it is run under two bracketing scenarios rather than one central estimate. The bottom row is the **claim rate**: expected claims per vehicle sold, which — since a pack is replaced at most once here — is also the probability that a given vehicle ever claims. "Uncapped" means with the mileage ceiling removed entirely, leaving only the `r params$age_ceiling`-year age limit, so it measures the degradation model alone before any contract geometry is applied.
+
+```{r calibration-table}
+tibble(calib = names(cal)) |>
+  mutate(
+    cc = map(calib, \(k) cal[[k]]),
+    `Calendar loss at 10 yr` = map_chr(cc, \(c) paste0(c$calendar_loss_10y, "%")),
+    `x_crit (pure throughput)` = map_chr(cc, \(c) paste0(
+      fmt_km(round(x_crit(c$calendar_loss_10y, c$km_crit_pure, d_crit))), " km"
+    )),
+    `Unit heterogeneity sigma` = map_chr(cc, \(c) fmt_num(c$sd_unit, 2)),
+    `Median loss at 10 yr / 150,000 km` = map_chr(cc, \(c) paste0(
+      fmt_num(loss_path(10, 15000, c$a, c$b) * exp(-c$sd_unit^2 / 2)), "%"
+    )),
+    `Uncapped 10-yr claim rate` = map_chr(calib, \(k) fmt_pct(uncapped[[k]], 2))
+  ) |>
+  transmute(Quantity = map_chr(cc, \(c) c$label),
+            `Calendar loss at 10 yr`, `x_crit (pure throughput)`,
+            `Unit heterogeneity sigma`, `Median loss at 10 yr / 150,000 km`,
+            `Uncapped 10-yr claim rate`) |>
+  pivot_longer(-Quantity, names_to = "Parameter") |>
+  pivot_wider(names_from = Quantity, values_from = value) |>
+  show_table(align = "lrr")
+```
+
+A approximates Toyota's stated engineering aspiration; B represents a fast-fade fleet. The spread between them is the dominant uncertainty in everything below.
+
+---
+
+## 6. Fleet-level results
+
+This section takes the manufacturer's view: what the contract costs across everyone who buys the car. Section 7 takes the buyer's.
+
+### 6.1 Retained liability by mileage cap (full compliance, T = `r params$age_ceiling`)
+
+Two columns need defining. **Claim rate** is the expected number of claims per vehicle sold — since a pack is replaced at most once here, it is also the probability that a given vehicle claims. **Retained** is that claim rate as a fraction of the claim rate under no mileage cap at all: the share of the underlying liability the manufacturer still carries after the cap does its work. Retained = 1 means the cap removes nothing; retained = 0 means it removes everything.
+
+```{r cap-table}
+cap_table <- tibble(cap_km = cap_grid) |>
+  mutate(
+    truncated = fleet_truncated(cap_km, params$age_ceiling,
+                                params$med_rate, params$sdlog_rate),
+    claims_a = map_dbl(cap_km, \(k) rate_of(cal$A, params$age_ceiling, k)),
+    claims_b = map_dbl(cap_km, \(k) rate_of(cal$B, params$age_ceiling, k)),
+    retained_a = claims_a / uncapped[["A"]],
+    retained_b = claims_b / uncapped[["B"]]
+  )
+
+cap_table |>
+  transmute(
+    `K (km)` = fmt_km(cap_km),
+    `Fleet truncated` = fmt_pct(truncated, 1),
+    `Claim rate A` = fmt_pct(claims_a, 3),
+    `Retained A` = fmt_num(retained_a, 3),
+    `Claim rate B` = fmt_pct(claims_b, 3),
+    `Retained B` = fmt_num(retained_b, 3)
+  ) |>
+  show_table()
+```
+
+```{r leverage, include=FALSE}
+lev <- cap_table |>
+  filter(truncated > 0, retained_a < 1) |>
+  mutate(leverage_a = (1 - retained_a) / truncated) |>
+  arrange(desc(leverage_a))
+lev_peak <- lev$cap_km[1]
+# Two highest-leverage caps, reported low-to-high on both axes so the prose
+# ranges read in ascending order.
+lev_top <- lev |>
+  slice_head(n = 2) |>
+  mutate(leverage = (1 - retained_a) / truncated) |>
+  arrange(leverage)
+
+sub_row <- cap_table |> filter(cap_km == params$subaru_ceiling_km)
+mid_row <- cap_table |> filter(cap_km == 400000)
+```
+
+**Leverage effect.** The cap does not sample the fleet at random. At `r fmt_km(params$subaru_ceiling_km)` km it excludes `r fmt_pct(sub_row$truncated, 0)` of vehicles and removes `r fmt_pct(1 - sub_row$retained_b, 1)`–`r fmt_pct(1 - sub_row$retained_a, 1)` of expected claims; at `r fmt_km(400000)` km it excludes `r fmt_pct(mid_row$truncated, 0)` and removes `r fmt_pct(1 - mid_row$retained_b, 0)`–`r fmt_pct(1 - mid_row$retained_a, 0)`. Liability removed per customer disadvantaged peaks around `r fmt_km(min(lev_top$cap_km))`–`r fmt_km(max(lev_top$cap_km))` km, at roughly `r fmt_num(lev_top$leverage[1], 0)`–`r fmt_num(lev_top$leverage[2], 0)`x in calibration A. Both manufacturers sit at corners rather than at that peak, which indicates the cap is not set by an actuarial optimisation.
+
+```{r fig-leverage, fig.height=6.2}
+k_grid <- round(exp(seq(log(params$base_km), log(params$toyota_ceiling_km),
+                        length.out = 45)))
+
+liab <- expand_grid(calib = names(cal), K = k_grid) |>
+  mutate(
+    claims = map2_dbl(calib, K, \(k, kk) rate_of(cal[[k]], params$age_ceiling, kk)),
+    retained = claims / uncapped[calib],
+    truncated = trunc_at(K),
+    leverage = (1 - retained) / truncated,
+    series = map_chr(calib, \(k) cal[[k]]$label)
+  )
+
+p_top <- "Share of liability retained, and share of fleet constrained"
+p_bot <- "Liability removed per constrained customer (ratio)"
+
+bind_rows(
+  liab |> transmute(K, value = retained, series, panel = p_top),
+  liab |> filter(calib == "A") |>
+    transmute(K, value = truncated, series = "Fleet constrained by the cap",
+              panel = p_top),
+  liab |> transmute(K, value = leverage, series, panel = p_bot)
+) |>
+  mutate(panel = factor(panel, levels = c(p_top, p_bot))) |>
+  ggplot(aes(K, value, colour = series)) +
+  geom_vline(xintercept = params$subaru_ceiling_km, colour = pal[["subaru"]],
+             linetype = "22", linewidth = 0.5) +
+  geom_vline(xintercept = params$toyota_ceiling_km, colour = pal[["toyota"]],
+             linetype = "22", linewidth = 0.5) +
+  geom_line(linewidth = 0.85) +
+  facet_wrap(~panel, ncol = 1, scales = "free_y") +
+  scale_x_log10(labels = lab_km,
+                breaks = c(2e5, 3e5, 5e5, 7e5, 1e6)) +
+  scale_colour_manual(values = setNames(
+    c(pal[["A"]], pal[["B"]], "grey45"),
+    c(cal$A$label, cal$B$label, "Fleet constrained by the cap")
+  )) +
+  labs(
+    title = "A mileage cap does not sample the fleet at random",
+    subtitle = "Dashed verticals mark where the two makers actually set their ceilings",
+    x = "Mileage ceiling K (km, log scale)", y = NULL,
+    caption = paste0(
+      "Top: the share of underlying liability the maker still carries after the cap, against the share of drivers\n",
+      "the cap constrains. At Subaru's ", lab_km(params$subaru_ceiling_km),
+      " km the cap disadvantages ", fmt_pct(sub_row$truncated, 0),
+      " of buyers and removes ",
+      fmt_pct(1 - sub_row$retained_b, 1), "-", fmt_pct(1 - sub_row$retained_a, 1), " of\n",
+      "expected claims. Bottom: that ratio peaks near ", lab_km(lev_peak),
+      " km, at roughly ", fmt_num(max(lev_top$leverage), 0),
+      "x on the benign calibration.\n",
+      "Both makers sit at a corner rather than at that peak."
+    )
+  ) +
+  theme_note() +
+  theme(legend.text = element_text(size = 8.5))
+```
+
+### 6.2 With distance-indexed lapse
+
+```{r lapse-table}
+lapse_table <- expand_grid(
+  calib = names(cal),
+  pi_check = pi_grid,
+  mode = c("reinstatable", "permanent")
+) |>
+  mutate(
+    sub = pmap_dbl(list(calib, pi_check, mode),
+                   \(k, p, m) rate_of(cal[[k]], params$age_ceiling,
+                                      params$subaru_ceiling_km, p, m)),
+    toy = pmap_dbl(list(calib, pi_check, mode),
+                   \(k, p, m) rate_of(cal[[k]], params$age_ceiling,
+                                      params$toyota_ceiling_km, p, m)),
+    ratio = toy / sub
+  ) |>
+  # At full compliance the two regimes coincide, so show that row once.
+  filter(pi_check < 1 | mode == params$lapse_mode)
+
+lapse_table |>
+  transmute(
+    Calibration = calib,
+    pi = fmt_num(pi_check, 2),
+    Regime = ifelse(pi_check >= 1, "—", mode),
+    !!paste0(params$age_ceiling, " yr / ",
+             fmt_km(params$subaru_ceiling_km), " km") := fmt_pct(sub, 3),
+    !!paste0(params$age_ceiling, " yr / ",
+             fmt_km(params$toyota_ceiling_km), " km") := fmt_pct(toy, 3),
+    # A ratio of 8.5 must not print as "8"; large ones do not need decimals.
+    # formatC() does not vectorise over `digits`, hence map2_chr().
+    Ratio = paste0(
+      map2_chr(ratio, ifelse(ratio >= 100, 0, 1), \(x, d) fmt_num(x, d)), "x"
+    )
+  ) |>
+  show_table()
+```
+
+```{r lapse-effect, include=FALSE}
+cut_at <- function(m) {
+  full <- lapse_table |> filter(calib == "A", pi_check == 1)
+  low <- lapse_table |> filter(calib == "A", pi_check == min(pi_grid), mode == m)
+  1 - low$toy / full$toy
+}
+cut_perm <- cut_at("permanent")
+cut_rein <- cut_at("reinstatable")
+```
+
+**Which regime holds decides whether this section matters at all.** Under permanent forfeiture, lapse cuts Toyota's exposure by roughly `r fmt_pct(cut_perm, 0)` at $\pi = `r fmt_num(min(pi_grid), 2)`$ while barely touching Subaru's, because the geometric decay compounds over `r fmt_num(extra_to_toyota, 0)` at-risk checks rather than `r fmt_num(extra_to_subaru)`. On that reading Toyota's higher ceiling is substantially self-neutralising — the same rule that makes the million reachable also makes it improbable that anyone arrives there with unbroken cover.
+
+Under reinstatement, which is what Toyota Denmark's terms appear to describe (section 3.3), the same compliance rate cuts exposure by only `r fmt_pct(cut_rein, 0)`, and it cuts both makes about equally. **The self-neutralising argument then largely disappears**: Toyota's ceiling is worth close to its full face value, and the number of checks required stops being a defence. This is the single largest correction the Danish terms make to the note, and it runs in Toyota's favour.
+
+The buyer-level sections use full compliance throughout, so they are unaffected either way; a buyer choosing to hold the cover is by construction one who turns up for the checks.
+
+### 6.3 Decomposition of the contract gap (full compliance)
+
+```{r decomposition}
+decomp <- tibble(calib = names(cal)) |>
+  mutate(
+    base = map_dbl(calib, \(k) rate_of(cal[[k]], params$base_years, params$base_km)),
+    mile_end = map_dbl(calib, \(k) rate_of(cal[[k]], params$base_years,
+                                           params$toyota_ceiling_km)),
+    full = map_dbl(calib, \(k) rate_of(cal[[k]], params$age_ceiling,
+                                       params$toyota_ceiling_km)),
+    mileage_axis = mile_end - base,
+    time_axis = full - mile_end,
+    total = full - base
+  )
+
+tibble(
+  Component = c(
+    paste0("Mileage axis (", fmt_km(params$base_km), " -> ",
+           fmt_km(params$toyota_ceiling_km), ", at ", params$base_years, " yr)"),
+    paste0("Time axis (", params$base_years, " -> ", params$age_ceiling,
+           " yr, at ", fmt_km(params$toyota_ceiling_km), " km)"),
+    paste0("**Total (", params$base_years, "y/", fmt_km(params$base_km), " -> ",
+           params$age_ceiling, "y/", fmt_km(params$toyota_ceiling_km), ")**")
+  ),
+  A = c(
+    paste0("+", fmt_num(100 * decomp$mileage_axis[1], 3), " pp"),
+    paste0("+", fmt_num(100 * decomp$time_axis[1], 3), " pp"),
+    paste0("**+", fmt_num(100 * decomp$total[1], 2), " pp**")
+  ),
+  B = c(
+    paste0("+", fmt_num(100 * decomp$mileage_axis[2], 3), " pp"),
+    paste0("+", fmt_num(100 * decomp$time_axis[2], 3), " pp"),
+    paste0("**+", fmt_num(100 * decomp$total[2], 2), " pp**")
+  )
+) |>
+  show_table(align = "lrr")
+```
+
+```{r extraction, include=FALSE}
+# What the top-mileage buyer extracts, per DKK of pooled accrual, on each
+# calibration. Reported as a sorted range rather than A-then-B: which
+# calibration gives the larger multiple depends on the parameters.
+extraction_ratio <- c(
+  pv_at(max(buyer_rates), "A") / (decomp$total[1] * params$severity_maker_dkk),
+  pv_at(max(buyer_rates), "B") / (decomp$total[2] * params$severity_maker_dkk)
+)
+```
+
+At `r fmt_dkk(params$severity_maker_dkk)` DKK severity: the mileage-axis component alone costs **`r fmt_dkk(decomp$mileage_axis[1] * params$severity_maker_dkk)`–`r fmt_dkk(decomp$mileage_axis[2] * params$severity_maker_dkk)` DKK per vehicle sold**; the full contract difference costs **`r fmt_dkk(decomp$total[1] * params$severity_maker_dkk)`–`r fmt_dkk(decomp$total[2] * params$severity_maker_dkk)` DKK**. Large ratios on a small base — the relative asymmetry is one to nearly three orders of magnitude, the absolute amount is modest. That amount is the **accrual**: the sum a manufacturer books as a liability per car sold to cover future warranty claims, the warranty analogue of a loan-loss provision. The gap between the two contracts is enormous in ratio and small in DKK, and it is exactly this divergence — between the marketing claim and the accounting entry — where intuition misfires on rare-event ratios.
+
+---
+
+## 7. Buyer-level valuation
+
+The relevant quantity is the probability that a threshold crossing falls **inside Toyota's coverage but outside Subaru's**, discounted:
+
+$$\text{PV}_{\text{gap}} = P\!\left(W_{\text{sub}} < T_D \le W_{\text{toy}}\right) \cdot S_0 (1-\delta)^{\bar{t}} \cdot v^{\bar{t}} \cdot \rho$$
+
+with $\delta = `r params$severity_decline`$ real severity decline, $v = 1/(1 + `r params$discount_real`)$ real discount, and $\rho = `r params$repair_worthy`$ repair-worthiness. The mean claim year $\bar{t}$ is the conditional mean of $T_D$ over the gap window, computed by integration.
+
+```{r buyer-table}
+buyer_gap |>
+  transmute(
+    `Annual km` = fmt_km(rate),
+    Calibration = calib,
+    `Subaru term` = paste0(fmt_num(term_subaru), " yr"),
+    `Toyota term` = paste0(fmt_num(term_toyota), " yr"),
+    `Gap prob` = fmt_pct(p_gap, 3),
+    `Mean claim yr` = ifelse(is.na(t_bar), "—", fmt_num(t_bar, 2)),
+    `PV (DKK)` = fmt_dkk(pv_dkk)
+  ) |>
+  arrange(match(`Annual km`, fmt_km(buyer_rates)), Calibration) |>
+  show_table()
+```
+
+**Hard discontinuity at `r fmt_km(gap_opens_at)` km/yr.** Below it the two contracts are identical — the mileage cap never binds for either, and the difference is exactly zero. Everything is in the tail.
+
+### 7.1 Discount-rate sensitivity
+
+```{r discount-sensitivity}
+sens <- expand_grid(
+  rate = buyer_rates[buyer_rates > gap_opens_at],
+  calib = names(cal),
+  discount = discount_grid
+) |>
+  mutate(pv = pmap_dbl(list(calib, rate, discount),
+                       \(k, r, d) gap_of(cal[[k]], r, discount = d)$pv_dkk)) |>
+  mutate(disc_label = paste0("PV @ ", fmt_pct(discount, 0))) |>
+  select(rate, calib, disc_label, pv) |>
+  pivot_wider(names_from = disc_label, values_from = pv)
+
+sens |>
+  mutate(across(starts_with("PV"), \(x) fmt_dkk(x))) |>
+  rename(`Annual km` = rate, Calibration = calib) |>
+  mutate(`Annual km` = fmt_km(`Annual km`)) |>
+  show_table()
+```
+
+The `r fmt_pct(max(discount_grid), 0)` column is included only to show how little turns on this choice; it is far above any defensible real rate. Even across that exaggerated span the PV moves by at most `r fmt_num(max(sens[["PV @ 1%"]] / sens[["PV @ 5%"]]), 2)`x, and across the defensible `r fmt_pct(min(discount_cred), 0)`–`r fmt_pct(max(discount_cred), 0)` range by far less. The calibration spread A-vs-B is much larger than either. Section 11.1 makes the comparison explicit.
+
+### 7.2 The self-selection problem
+
+Toyota's pooled accrual for the extra coverage is `r fmt_dkk(decomp$total[1] * params$severity_maker_dkk)`–`r fmt_dkk(decomp$total[2] * params$severity_maker_dkk)` DKK per vehicle sold. A `r fmt_km(max(buyer_rates))` km/yr buyer extracts `r fmt_dkk(pv_at(max(buyer_rates), "A"))`–`r fmt_dkk(pv_at(max(buyer_rates), "B"))` DKK gross from it. That factor of `r fmt_num(min(extraction_ratio), 0)` to `r fmt_num(max(extraction_ratio), 0)` is a textbook adverse-selection setup: the contract is nearly free on the pooled fleet and highly valuable to a small high-mileage minority, so it should attract exactly that minority, shifting $g(r)$ rightward and invalidating the accrual assumption that made it cheap.
+
+The defences are the distance-indexed lapse mechanism (section 3.3) and — decisively — the fine print on commercial, taxi and ride-hail use. **That exclusion is what makes the accrual argument in this section hold**: without it, the contract would attract precisely the operators who extract most from it.
+
+> **Whose problem this is.** The exclusion is a manufacturer-side defence, and it is easy to misread as a warning to the buyer. It is not one. Toyota Denmark's exclusion names *Proace* — a commercial van — and *Taxa*, licensed taxi use. Neither is a mileage threshold, so **a private owner is unaffected however far they drive**: someone doing `r fmt_km(max(buyer_rates))` km/yr in a passenger car is not in either category. The exclusion belongs to the actuarial argument, not to the buyer's checklist.
+
+### 7.3 The residual-value channel
+
+Probably larger than the direct claim value, for three reasons:
+
+1. **Earlier realisation.** A `r fmt_km(params$ref_rate)` km/yr Subaru owner reaches year `r fmt_num(params$subaru_ceiling_km / params$ref_rate)` with `r fmt_km(params$subaru_ceiling_km)` km and no battery cover; the Toyota owner has `r fmt_num(params$age_ceiling - params$subaru_ceiling_km / params$ref_rate)` years remaining and transferable. A year-`r fmt_num(params$subaru_ceiling_km / params$ref_rate, 0)` cash flow, not a year-8-or-9 one.
+2. **Variance pricing.** The marginal buyer of a `r fmt_km(params$subaru_ceiling_km)` km used EV faces a lumpy, undiversifiable five-figure tail with no ability to pool it. They discount by more than the actuarial expectation — a risk premium *on top of* the PV figures above, consistent with the direction argued in section 1.2.
+3. **Information.** The health-check regime generates a documented SoH history, an independent fix for the lemons problem where pack condition cannot be cheaply verified. Toyota's scheme produces roughly `r fmt_num(checks_to_toyota / checks_to_subaru, 0)` times as many data points as Subaru's over the covered life. Certification has value even where no claim is ever made.
+
+### 7.4 Servicing cost — and in one scenario it dominates
+
+Both cars need a visit every `r fmt_km(params$increment_km)` km, so the *number* of visits is the same either way. What differs is where they must happen and what each network charges.
+
+- The **Toyota** owner must use a Toyota dealer to keep the cover alive — though only once the base guarantee has run out, at `r fmt_km(params$base_km)` km. This section prices the simple case of dealer servicing throughout; section 7.10 relaxes it.
+- The **Subaru** owner must use a Subaru dealer only while Subaru's cover is live — to `r fmt_km(params$subaru_ceiling_km)` km — and is free after that.
+- **Neither is equidistant.** The journey is part of the price of a visit, and on the figures set the Toyota workshop is `r fmt_km(travel_extra_toyota_km)` km further round trip.
+
+So the cost that matters is not "the dealer premium" but the difference between two streams of priced visits — and that difference has two parts which are worth keeping apart, because only one of them is a warranty question.
+
+- **A brand penalty.** On any visit you would make at a franchised dealer anyway, the Toyota costs more: dearer per service, and `r fmt_km(travel_extra_toyota_km)` km further to reach. This is a property of the two brands and your two local workshops. It has nothing to do with the battery guarantee, and you pay it whatever you later decide about independents.
+- **The price of the extra cover.** Once Subaru's guarantee lapses at `r fmt_km(params$subaru_ceiling_km)` km, a Subaru owner is free to service anywhere. A Toyota owner who wants the higher ceiling is not. Those extra tied visits are what the ceiling actually costs — and you pay them only if you want it.
+
+The first is unavoidable once you choose the car; the second is a decision you take later. Keeping them separate matters because **the choice between a dealer and an independent is one you would make the same way whichever car you bought**, so it should not be doing any work in the choice between the cars.
+
+#### The Toyota tariff
+
+Toyota's Danish prices are not a single figure: services **alternate** between a small and a large one, and the schedule is indexed on 1 year *or* `r fmt_km(params$increment_km)` km, whichever comes first — the same trigger as the warranty increment.
+
+```{r toyota-tariff}
+tibble(
+  Service = c("Lille service (small)", "Stort service (large)"),
+  `Falls due at` = c(
+    paste0("odd multiples: ", fmt_km(params$increment_km), ", ",
+           fmt_km(3 * params$increment_km), ", ",
+           fmt_km(5 * params$increment_km), " km ..."),
+    paste0("even multiples: ", fmt_km(2 * params$increment_km), ", ",
+           fmt_km(4 * params$increment_km), ", ",
+           fmt_km(6 * params$increment_km), " km ...")
+  ),
+  Price = c(paste0(fmt_dkk(params$service_toyota_small_dkk), " DKK"),
+            paste0(fmt_dkk(params$service_toyota_large_dkk), " DKK")),
+  Includes = c(
+    "EV check, software, brake test, 30+ point check, wash",
+    "as small, plus cabin filter and brake fluid"
+  )
+) |>
+  show_table(align = "llrl")
+```
+
+#### And the Subaru tariff
+
+Subaru's quote has exactly the same shape — small at odd multiples of the interval, large at even — which makes the two directly comparable visit by visit.
+
+```{r tariff-compare}
+tibble(
+  Service = c("Small (odd multiples)", "Large (even multiples)"),
+  Toyota = c(params$service_toyota_small_dkk, params$service_toyota_large_dkk),
+  Subaru = c(params$service_subaru_small_dkk, params$service_subaru_large_dkk)
+) |>
+  mutate(
+    `Subaru cheaper by` = Toyota - Subaru,
+    `as %` = fmt_pct((Toyota - Subaru) / Toyota, 1),
+    across(c(Toyota, Subaru, `Subaru cheaper by`), \(x) fmt_num(x, 2))
+  ) |>
+  show_table(caption = paste0(
+    "Both incl. VAT. Toyota: Toyota Køge calculator. Subaru: an authorised ",
+    "Subaru workshop in Denmark, quote of 3 September 2026, e-Outback 280 kW."
+  ))
+```
+
+```{r tariff-fragility, include=FALSE}
+quoted_to <- params$subaru_quoted_to_km
+vis <- service_schedule(my$rate, params$increment_km, params$age_ceiling) |>
+  mutate(km = params$increment_km * k)
+pr <- price_set()
+pick <- function(pair, big) ifelse(big, pair[2], pair[1])
+dif_v <- (pick(pr$toyota, vis$large) - pick(pr$subaru, vis$large)) /
+  (1 + params$discount_real)^vis$year
+share_extrap <- sum(dif_v[vis$km > quoted_to]) / sum(dif_v)
+
+# Uplift on Subaru's post-quote prices at which the adverse-calibration net
+# turns positive again.
+gap_b <- my$gap_full[["B"]]
+f_up <- function(u) {
+  late <- vis$km > quoted_to
+  subp <- pick(c(params$service_subaru_small_dkk, params$service_subaru_large_dkk),
+               vis$large) * ifelse(late, u, 1) +
+    0  # Subaru is the travel baseline
+  sum((pick(pr$toyota, vis$large) - subp) /
+        (1 + params$discount_real)^vis$year) - gap_b
+}
+uplift <- tryCatch(uniroot(f_up, c(1, 5))$root, error = function(e) NA_real_)
+```
+
+**The Subaru quote covers only the first `r fmt_km(quoted_to)` km, and that matters more than it sounds.** At `r fmt_km(my$rate)` km/yr you reach `r fmt_km(quoted_to)` km in year `r fmt_num(quoted_to / my$rate)`, so the five quoted services are the first five of `r nrow(vis)`. The remaining `r nrow(vis) - sum(vis$km <= quoted_to)` are priced by holding the quoted figures flat — the same assumption Toyota's published tariff makes, since it lists one price per service type out to 180,000 km, but an assumption nonetheless. **`r fmt_pct(share_extrap, 0)` of the servicing differential rests on those extrapolated visits.**
+
+That is fragile in a specific and checkable way. The two tariffs differ by only `r fmt_pct(1 - params$service_subaru_small_dkk / params$service_toyota_small_dkk, 1)`–`r fmt_pct(1 - params$service_subaru_large_dkk / params$service_toyota_large_dkk, 1)`, so the conclusion turns on Subaru staying slightly cheaper across fifteen services nobody has quoted. `r if (is.finite(uplift)) paste0("If Subaru's prices past ", fmt_km(quoted_to), " km came in just **", fmt_pct(uplift - 1, 1), " higher** than quoted — a small service at ", fmt_dkk(params$service_subaru_small_dkk * uplift), " rather than ", fmt_dkk(params$service_subaru_small_dkk), " DKK — the adverse-calibration verdict would flip back.") else ""` Ageing cars do not usually get cheaper to service, so that is well inside the range of what might happen.
+
+One comparability caveat: the Subaru figures are explicitly *inkl. skat*, and Toyota's calculator is a consumer price list, which in Denmark is conventionally quoted the same way. If Toyota's were in fact ex-VAT, the comparison would be wrong by 25% and in Subaru's favour. Worth one question to confirm.
+
+So an owner of either car alternates. Toyota averages **`r fmt_dkk(mean(c(params$service_toyota_small_dkk, params$service_toyota_large_dkk)))` DKK a visit** against Subaru's **`r fmt_dkk(mean(c(params$service_subaru_small_dkk, params$service_subaru_large_dkk)))`**. At `r fmt_km(my$rate)` km/yr that is `r fmt_num(my$rate / params$increment_km)` visits a year, or about `r fmt_dkk(my$rate / params$increment_km * mean(c(params$service_toyota_small_dkk, params$service_toyota_large_dkk)))` DKK a year on the Toyota, every year, for as long as the cover is to be kept alive. The model enumerates these visits individually rather than averaging them.
+
+`r if (subaru_placeholder) "Two prices are still missing. **Subaru's tariff is pending** and is currently set equal to Toyota's — a placeholder that makes the franchised-dealer scenario net to zero, which is an artefact and not a finding. **No independent quote has been obtained either**, and with Toyota's side now pinned down that is the binding unknown: section 7.5 inverts the question and asks what it would have to be." else "One price is still missing: **no independent quote has been obtained**, which is the binding unknown for the independent-workshop scenario. Section 7.5 inverts the question and asks what it would have to be."`
+
+```{r servicing-table}
+ind_grid <- num(params$independent_sensitivity)
+
+serv <- expand_grid(
+  rate = buyer_rates[buyer_rates > gap_opens_at],
+  dealer_anyway = c(FALSE, TRUE)
+) |>
+  mutate(
+    res = map2(rate, dealer_anyway, \(r, d) cost_of(r, dealer_anyway = d)),
+    lo = map2_dbl(rate, dealer_anyway, \(r, d) cost_of(
+      r, dealer_anyway = d,
+      prices = price_set(max(ind_grid), max(ind_grid) * ind_ratio))$pv_dkk),
+    hi = map2_dbl(rate, dealer_anyway, \(r, d) cost_of(
+      r, dealer_anyway = d,
+      prices = price_set(min(ind_grid), min(ind_grid) * ind_ratio))$pv_dkk)
+  ) |>
+  unnest(res, names_repair = "unique") |>
+  left_join(scenarios, by = "dealer_anyway")
+
+serv |>
+  transmute(
+    `Annual km` = fmt_km(rate...1),
+    Scenario = scenario,
+    Visits = fmt_num(visits_total, 0),
+    `Tied to Subaru` = fmt_num(visits_tied_subaru, 0),
+    `Freed` = fmt_num(visits_freed, 0),
+    `PV of difference` = paste0(fmt_dkk(pv_dkk), " DKK"),
+    `Over independent range` = paste0(fmt_dkk(lo), " to ", fmt_dkk(hi))
+  ) |>
+  show_table(caption = paste0(
+    "Toyota priced from the published tariff; Subaru set equal to it pending a ",
+    "quote. The range column sweeps the independent small-service price from ",
+    fmt_dkk(max(ind_grid)), " down to ", fmt_dkk(min(ind_grid)),
+    " DKK, with the large service scaled in proportion."
+  ))
+```
+
+```{r servicing-reads, include=FALSE}
+serv_at <- function(r, d) {
+  x <- serv |> filter(rate...1 == r, dealer_anyway == d)
+  list(pv = x$pv_dkk, lo = x$lo, hi = x$hi)
+}
+ref_ind <- serv_at(params$ref_rate, FALSE)
+top_ind <- serv_at(max(buyer_rates), FALSE)
+```
+
+```{r dealer-delta, include=FALSE}
+# Cost of the two franchised tariffs differing by 100 DKK a visit.
+delta_100 <- cost_of(
+  params$ref_rate, dealer_anyway = TRUE,
+  prices = list(toyota = c(100, 100), subaru = c(0, 0),
+                independent = c(0, 0))
+)$pv_dkk
+```
+
+```{r dealer-scenario-note, results='asis'}
+dlr_25 <- serv |> filter(rate...1 == min(rate...1), dealer_anyway) |> pull(pv_dkk)
+
+cat(if (subaru_placeholder) paste0(
+  "**Subaru's tariff is a placeholder set equal to Toyota's**, so in the ",
+  "franchised-dealer row the two service prices cancel and what remains is ",
+  "the journey: ", fmt_dkk(dlr_25), " DKK at the lowest mileage shown, rising ",
+  "with the number of visits. That the column is not zero is entirely a ",
+  "distance effect, and it is the one part of that scenario currently resting ",
+  "on evidence rather than a placeholder. Replacing Subaru's tariff is the ",
+  "single most useful thing left to do."
+) else paste0(
+  "**Subaru's tariff is now entered at ", fmt_dkk(params$service_subaru_small_dkk),
+  "/", fmt_dkk(params$service_subaru_large_dkk),
+  " DKK**, so the franchised-dealer row now carries both a price difference and ",
+  "a distance difference rather than a placeholder."
+))
+```
+
+To calibrate what the missing tariff is worth: each `r fmt_dkk(100)` DKK by which a Toyota visit exceeds a Subaru visit costs a `r fmt_km(params$ref_rate)` km/yr buyer about `r fmt_dkk(delta_100)` DKK over the `r params$age_ceiling` years. **If Subaru servicing turns out even `r fmt_dkk(200)` DKK a visit cheaper, that alone would offset roughly `r fmt_dkk(2 * delta_100)` DKK — comparable to the entire gap value at this mileage.**
+
+In the independent-workshop scenario the differential is **`r fmt_dkk(ref_ind$pv)` DKK at `r fmt_km(params$ref_rate)` km/yr (`r fmt_dkk(ref_ind$lo)`–`r fmt_dkk(ref_ind$hi)` across the independent price range) and `r fmt_dkk(top_ind$pv)` DKK at `r fmt_km(max(buyer_rates))` km/yr (`r fmt_dkk(top_ind$lo)`–`r fmt_dkk(top_ind$hi)`)**. Compare against gross gap PV of `r fmt_dkk(pv_at(params$ref_rate, "A"))`–`r fmt_dkk(pv_at(params$ref_rate, "B"))` DKK and `r fmt_dkk(pv_at(max(buyer_rates), "A"))`–`r fmt_dkk(pv_at(max(buyer_rates), "B"))` DKK respectively.
+
+```{r net-table}
+net <- serv |>
+  select(rate = rate...1, scenario, cost_pv = pv_dkk, lo, hi) |>
+  left_join(buyer_gap |> select(rate, calib, pv_dkk), by = "rate",
+            relationship = "many-to-many") |>
+  mutate(net = pv_dkk - cost_pv)
+
+net |>
+  transmute(
+    `Annual km` = fmt_km(rate),
+    Scenario = scenario,
+    Calibration = calib,
+    `Gap PV` = fmt_dkk(pv_dkk),
+    `Servicing PV` = fmt_dkk(cost_pv),
+    `Net (DKK)` = fmt_dkk(net),
+    Verdict = ifelse(net > 0, "clears", "does not clear")
+  ) |>
+  show_table()
+```
+
+```{r fig-net, fig.height=5.2}
+r_seq <- seq(min(buyer_rates), max(buyer_rates) * 1.17, length.out = 120)
+
+gapc <- expand_grid(calib = names(cal), r = r_seq) |>
+  mutate(pv = map2_dbl(calib, r, \(k, rr) gap_of(cal[[k]], rr)$pv_dkk))
+
+costc <- tibble(r = r_seq) |>
+  mutate(pv = map_dbl(r, \(rr) cost_of(rr, dealer_anyway = FALSE)$pv_dkk))
+
+r_lab <- max(r_seq) * 0.94
+ends <- tibble(
+  label = c("Compliance cost", paste0("Gap value, calibration ", names(cal))),
+  col = c(pal[["subaru"]], pal[["A"]], pal[["B"]]),
+  y = c(costc$pv[which.min(abs(costc$r - r_lab))],
+        map_dbl(names(cal), \(k) {
+          d <- filter(gapc, calib == k)
+          d$pv[which.min(abs(d$r - r_lab))]
+        }))
+)
+
+y_top <- max(costc$pv) * 1.09
+
+ggplot() +
+  geom_ribbon(data = pivot_wider(gapc, names_from = calib, values_from = pv),
+              aes(r, ymin = .data[[names(cal)[1]]], ymax = .data[[names(cal)[2]]]),
+              fill = pal[["A"]], alpha = 0.18) +
+  geom_line(data = gapc, aes(r, pv, colour = calib), linewidth = 0.9) +
+  geom_line(data = costc, aes(r, pv), colour = pal[["subaru"]],
+            linewidth = 1, linetype = "42") +
+  geom_vline(xintercept = gap_opens_at, colour = "grey45", linetype = "22") +
+  annotate("text", x = gap_opens_at, y = y_top * 0.96, hjust = -0.06, size = 2.9,
+           colour = "grey30",
+           label = paste0("gap opens at ", lab_km(gap_opens_at), " km/yr")) +
+  geom_text(data = ends, aes(x = r_lab, y = y, label = label),
+            colour = ends$col, hjust = 1, vjust = -0.9, size = 3) +
+  scale_colour_manual(values = setNames(c(pal[["A"]], pal[["B"]]), names(cal)),
+                      guide = "none") +
+  scale_x_continuous(labels = lab_km) +
+  scale_y_continuous(labels = label_comma()) +
+  coord_cartesian(ylim = c(0, y_top)) +
+  labs(
+    title = "What the higher ceiling is worth, against what it costs to hold",
+    subtitle = paste0("Present value in real DKK at a ",
+                      fmt_pct(params$discount_real, 0),
+                      " real discount rate, gross of any resale or documentation value"),
+    x = "Usage rate (km/yr)", y = "Present value (DKK)",
+    caption = paste0(
+      "The shaded band spans the two degradation calibrations, so it brackets the uncertainty about fade. The\n",
+      "servicing cost is the present value of the Toyota tariff on every visit, less what a Subaru owner would\n",
+      "pay once freed to use an independent, in the scenario where you would otherwise use one. It lies above\n",
+      "the band at every usage rate: in that scenario, on expected value alone, the higher ceiling never repays\n",
+      "its own upkeep. In the franchised-dealer scenario the cost line drops to the difference between the two\n",
+      "networks' prices, which is zero under the note's default of equal premiums."
+    )
+  ) +
+  theme_note()
+```
+
+```{r policy-table}
+w_sub <- my$term_subaru
+
+policies <- tibble(
+  Policy = c(
+    "Franchised dealer throughout",
+    "Toyota stays to hold the cover; Subaru leaves when free",
+    "Both leave when free — the extra cover declined"
+  ),
+  cost = c(
+    cost_of(my$rate, dealer_anyway = TRUE)$pv_dkk,
+    cost_of(my$rate, dealer_anyway = FALSE)$pv_dkk,
+    # Both tied to their own dealer to the same point, both independent after:
+    # what remains is the brand penalty alone.
+    cost_of(my$rate, dealer_anyway = TRUE, horizon = w_sub)$pv_dkk
+  ),
+  gap_a = c(my$gap_full[["A"]], my$gap_full[["A"]], 0),
+  gap_b = c(my$gap_full[["B"]], my$gap_full[["B"]], 0)
+) |>
+  mutate(net_a = gap_a - cost, net_b = gap_b - cost)
+
+policies |>
+  transmute(
+    `Servicing policy` = Policy,
+    `Cost of choosing Toyota` = paste0(fmt_dkk(cost), " DKK"),
+    `Cover gained` = ifelse(gap_b <= 0, "none",
+                            paste0(fmt_dkk(gap_a), "–", fmt_dkk(gap_b), " DKK")),
+    `Net, calibration A` = paste0(fmt_dkk(net_a), " DKK"),
+    `Net, calibration B` = paste0(fmt_dkk(net_b), " DKK")
+  ) |>
+  show_table(caption = paste0(
+    "At ", fmt_km(my$rate), " km/yr. Subaru's guarantee lapses in year ",
+    fmt_num(w_sub), ", which is when a Subaru owner becomes free to leave."
+  ))
+```
+
+**The sign does not depend on the servicing policy.** Toyota is behind under all three, and by a similar margin under the two coherent extremes — `r fmt_dkk(-policies$net_b[1])` DKK if you dealer-service throughout, `r fmt_dkk(-policies$net_b[3])` DKK if you both walk away as soon as you are free. The middle row is worse still, but it is the least natural of the three: it has you paying Toyota prices for `r params$age_ceiling` years specifically to hold a guarantee, while a Subaru owner in the same frame of mind has already left.
+
+That is the useful conclusion, because it means **the dealer-versus-independent question does not have to be settled first.** Whichever way you answer it, you would answer it the same way for either car; and on these tariffs the brand penalty runs against Toyota in every case. The one thing that would change the ranking is not your servicing habits but Subaru's prices past `r fmt_km(quoted_to)` km, which nobody has quoted.
+
+What the third row also shows is that **declining the cover is not the cheap escape it looks like.** Walking away at year `r fmt_num(w_sub)` avoids the extra tied visits, but you still paid the brand penalty on the `r sum(vis$km <= w_sub * my$rate)` visits before it — `r fmt_dkk(policies$cost[3])` DKK — and you gave up the ceiling entirely. Buying the Toyota and then declining its distinguishing feature is the worst of the three on calibration B.
+
+### 7.5 Break-even: what would an independent have to charge?
+
+Section 7.4 settled the choice between the cars without needing to know what an independent charges. This section takes up the separate question of whether to *use* one — which you would answer the same way whichever car you bought, but which is worth answering.
+
+Both franchised tariffs are quoted, so the one price still missing is the independent's. Rather than guess it, invert the question: **how cheap would an independent have to be before giving up the Toyota cover is worth it?** That is the only reason to abandon the cover, and it converts the missing number into a threshold a single quote can test.
+
+Raising the independent price raises what a freed Subaru owner pays, shrinking the differential. So for each usage rate there is a single independent price above which the ceiling pays for itself. Quotes *above* the curve mean keep the Toyota cover; quotes *below* it mean the saving beats the cover.
+
+```{r fig-breakeven, fig.height=5}
+be_rates <- seq(gap_opens_at * 1.02, max(buyer_rates) * 1.17, length.out = 100)
+
+be <- expand_grid(calib = names(cal), r = be_rates) |>
+  mutate(
+    gap = map2_dbl(calib, r, \(k, rr) gap_of(cal[[k]], rr)$pv_dkk),
+    be = map2_dbl(gap, r, \(g, rr) breakeven_independent(
+      g, rr, params$age_ceiling, params$subaru_ceiling_km,
+      params$increment_km, price_set(), params$discount_real,
+      dealer_anyway = FALSE))
+  )
+
+y_top <- max(c(be$be, params$service_margin_high)) * 1.12
+
+ggplot(be, aes(r, be, colour = calib)) +
+  geom_hline(yintercept = params$service_toyota_small_dkk, colour = pal[["subaru"]],
+             linetype = "42", linewidth = 0.9) +
+  geom_line(linewidth = 0.9) +
+  annotate("text", x = min(be_rates), y = params$service_toyota_small_dkk,
+           label = paste0(" Toyota small service: ",
+                          fmt_dkk(params$service_toyota_small_dkk), " DKK/visit"),
+           hjust = 0, vjust = -0.6, size = 3, colour = pal[["subaru"]]) +
+  geom_text(
+    data = be |> group_by(calib) |> slice_max(r, n = 1) |> ungroup(),
+    aes(label = paste0("calibration ", calib)),
+    hjust = 1, vjust = -0.8, size = 3, show.legend = FALSE
+  ) +
+  scale_colour_manual(values = setNames(c(pal[["A"]], pal[["B"]]), names(cal)),
+                      guide = "none") +
+  scale_x_continuous(labels = lab_km) +
+  scale_y_continuous(labels = label_comma()) +
+  coord_cartesian(ylim = c(0, y_top)) +
+  labs(
+    title = "What an independent workshop would have to charge",
+    subtitle = "An independent quote ABOVE the curve means keeping Toyota cover wins; below it, the saving wins",
+    x = "Usage rate (km/yr)", y = "Break-even independent price, small service (DKK)",
+    caption = paste0(
+      "Dashed line: Toyota's own small-service price of ",
+      fmt_dkk(params$service_toyota_small_dkk), " DKK. The break-even curves sit only a little below it, so an\n",
+      "independent would have to be barely cheaper than the franchised dealer before the ceiling stopped paying.\n",
+      "The sawtooth is real, not noise: visits fall due at fixed odometer points, so a small change in usage can\n",
+      "move a whole service in or out of the window and shift the cost by one visit."
+    )
+  ) +
+  theme_note()
+```
+
+```{r be-table}
+be_tbl <- tibble(rate = buyer_rates[buyer_rates > gap_opens_at]) |>
+  mutate(
+    gap_a = map_dbl(rate, \(r) gap_of(cal$A, r)$pv_dkk),
+    gap_b = map_dbl(rate, \(r) gap_of(cal$B, r)$pv_dkk),
+    be_a = map2_dbl(gap_a, rate, \(g, r) breakeven_independent(
+      g, r, params$age_ceiling, params$subaru_ceiling_km,
+      params$increment_km, price_set(), params$discount_real)),
+    be_b = map2_dbl(gap_b, rate, \(g, r) breakeven_independent(
+      g, r, params$age_ceiling, params$subaru_ceiling_km,
+      params$increment_km, price_set(), params$discount_real))
+  )
+
+be_tbl |>
+  transmute(
+    `Annual km` = fmt_km(rate),
+    `Break-even independent, A` = paste0(fmt_dkk(be_a), " DKK"),
+    `Break-even independent, B` = paste0(fmt_dkk(be_b), " DKK"),
+    `Toyota small service` = paste0(fmt_dkk(params$service_toyota_small_dkk), " DKK"),
+    `Ceiling pays at placeholder?` = ifelse(
+      be_b < params$service_independent_small_dkk, "yes, on B", "no")
+  ) |>
+  show_table()
+```
+
+**These break-evens sit remarkably close to Toyota's own price.** At `r fmt_km(params$ref_rate)` km/yr an independent would have to charge `r fmt_dkk(be_tbl$be_b[be_tbl$rate == params$ref_rate])`–`r fmt_dkk(be_tbl$be_a[be_tbl$rate == params$ref_rate])` DKK for a small service — against Toyota's `r fmt_dkk(params$service_toyota_small_dkk)` — before the ceiling becomes worth keeping. In other words the independent has to be **barely cheaper than the franchised dealer** for the ceiling to pay, which is not what independents are for.
+
+So if you would genuinely otherwise use an independent, the mileage ceiling does not repay the servicing needed to hold it. The remaining question is only how much cheaper your independent actually is, and a single quote settles it against the threshold above.
+
+### 7.6 Holding period: when should you sell?
+
+The gap window opens when Subaru's cover ends, at year `r fmt_num(my$term_subaru)` for a `r fmt_km(my$rate)` km/yr driver, and closes at the age ceiling in year `r fmt_num(my$term_toyota)`. Sell inside that window and the unused remainder is not destroyed — it is remaining cover the next owner inherits, and a rational used-car market pays for it. So the higher ceiling reaches you through two channels, and which one carries the value depends entirely on when you sell.
+
+**Start from the case where holding period does not matter at all.** Viewed from today, the expected value you hand on is exactly the full gap value less the part you claim yourself, because you collect a resale premium only in the states where you have not already claimed. If the used market paid full actuarial value for remaining warranty, the two channels would sum to the same number at every sale date and the question would be empty.
+
+Two frictions break that, and they pull in opposite directions:
+
+1. **Capitalisation.** Used-car buyers do not pay full actuarial value for remaining warranty; the terms are not salient at the point of sale and are hard to verify. The parameter `resale_capitalisation`, set to `r fmt_pct(cap_default, 0)` here, is the share that does show up in the price. Anything below 100% penalises selling early.
+2. **Compliance cost stops when you sell.** You pay only for the visits you make. Selling early avoids the later ones, which pushes the other way.
+
+```{r resale-table}
+holding_tbl |>
+  filter(calib == "B") |>
+  arrange(sale_year) |>
+  transmute(
+    `Sell in year` = fmt_num(sale_year, 0),
+    `Claims you make` = fmt_dkk(captured_pv),
+    `Cover handed on` = fmt_dkk(residual_pv),
+    `Resale premium at sale` = fmt_dkk(wtp_at_sale),
+    `Of which you capture` = fmt_dkk(resale_pv),
+    `Upkeep you pay` = fmt_dkk(compliance_pv),
+    `Net to you` = fmt_dkk(net_pv)
+  ) |>
+  show_table(caption = paste0(
+    "Calibration B (adverse), ", fmt_km(my$rate), " km/yr, capitalisation ",
+    fmt_pct(cap_default, 0),
+    ". All figures are present values in today's DKK except the resale premium,",
+    " which is stated in money of the sale year."
+  ))
+```
+
+The **resale premium at sale** column is the directly checkable one: it is what the Toyota ought to fetch over the Subaru on the used market at that age, on account of battery warranty alone, conditional on neither car having claimed yet. If you can observe actual used-car pricing for the two models, that column is the number to test it against — and if the observed premium is far below it, that tells you capitalisation is low and you should hold rather than sell.
+
+```{r fig-holding, fig.height=5.4}
+hold_fine <- sort(unique(c(
+  seq(1, params$age_ceiling, by = 0.25), my$term_subaru, my$hold
+)))
+hold_fine <- hold_fine[hold_fine > 0 & hold_fine <= params$age_ceiling]
+
+hold_curves <- expand_grid(
+  calib = names(cal), sale_year = hold_fine, cap = cap_share_grid
+) |>
+  pmap(\(calib, sale_year, cap) hold_value(calib, sale_year, cap)) |>
+  list_rbind() |>
+  mutate(
+    lab = map_chr(calib, \(k) cal[[k]]$label),
+    # Ordered by the number, not the string, or "100%" sorts before "30%".
+    cap_lab = factor(
+      paste0("capitalisation ", fmt_pct(capitalisation, 0)),
+      levels = paste0("capitalisation ", fmt_pct(sort(cap_share_grid), 0))
+    )
+  )
+
+marks <- hold_curves |>
+  filter(abs(capitalisation - cap_default) < 1e-9,
+         abs(sale_year - my$hold) < 1e-9)
+
+ggplot(hold_curves, aes(sale_year, net_pv, colour = cap_lab)) +
+  geom_vline(xintercept = my$term_subaru, colour = pal[["subaru"]],
+             linetype = "22", linewidth = 0.5) +
+  geom_line(linewidth = 0.85) +
+  geom_point(data = marks, colour = "black", size = 2.2) +
+  facet_wrap(~lab, scales = "free_y") +
+  annotate("text", x = my$term_subaru, y = Inf, label = " Subaru cover ends",
+           hjust = 0, vjust = 1.6, size = 2.9, colour = pal[["subaru"]]) +
+  scale_x_continuous(breaks = scales::breaks_width(2)) +
+  scale_y_continuous(labels = label_comma()) +
+  scale_colour_manual(values = setNames(
+    c("#9ecae1", pal[["toyota"]], "#08306b")[seq_along(cap_share_grid)],
+    paste0("capitalisation ", fmt_pct(sort(cap_share_grid), 0))
+  )) +
+  labs(
+    title = "The net advantage of the Toyota over the Subaru, by the year you sell",
+    subtitle = paste0(
+      "At ", lab_km(my$rate), " km/yr",
+      if (my$cost_faced <= 1) ", with no marginal servicing cost"
+      else if (my$dealer) paste0(", net of the ", fmt_km(travel_extra_toyota_km),
+                                 " km extra round trip to the Toyota workshop")
+      else paste0(", net of Toyota servicing at ",
+                  fmt_dkk(params$service_toyota_small_dkk), "/",
+                  fmt_dkk(params$service_toyota_large_dkk), " DKK a visit")
+    ),
+    x = "Year you sell the car",
+    y = "Toyota minus Subaru, net present value (DKK)",
+    caption = paste0(
+      "Black dot marks the ", fmt_num(my$hold, 0), "-year hold currently set. Each line fixes the share of remaining\n",
+      "warranty value that the used-car market pays for. The value side alone is flat at 100%: what you do not\n",
+      "claim you sell instead, so it does not matter when you sell. Any slope on that top line is therefore the\n",
+      "servicing cost, which keeps accruing the longer you hold. Below 100% the value side rises with holding\n",
+      "time as well, and the spread between the lines is the cost of imperfect transmission through resale."
+    )
+  ) +
+  theme_note()
+```
+
+```{r holding-verdict, results='asis'}
+# Everything here is stated relative to the plan currently set, with the sign
+# carried explicitly: a positive delta means that sale date beats the plan.
+b <- holding_tbl |> filter(calib == "B") |> arrange(sale_year)
+cur <- b$net_pv[which.min(abs(b$sale_year - my$hold))]
+b <- b |> mutate(delta = net_pv - cur)
+
+best <- b |> slice_max(net_pv, n = 1, with_ties = FALSE)
+early <- b |> filter(sale_year < my$hold)
+material <- max(abs(b$delta)) > 1
+
+cat(if (!my$binds) {
+  paste0(
+    "**The holding-period question does not arise for you.** At ",
+    fmt_km(my$rate), " km/yr there is no gap between the two contracts at any ",
+    "sale date, so the higher ceiling is worth nothing whenever you sell and ",
+    "the timing of a sale cannot be argued from the battery warranty either way."
+  )
+} else if (!material) {
+  paste0(
+    "**The sale date barely matters.** Across every year considered the value ",
+    "of the higher ceiling moves by under 1 DKK, because value you do not claim ",
+    "you sell instead. Choose your holding period on other grounds."
+  )
+} else {
+  paste0(
+    "**For the ", fmt_num(my$hold, 0), "-year hold currently set: ",
+    if (best$sale_year >= my$hold - 1e-9) {
+      "holding to the end is the value-maximising choice."
+    } else {
+      paste0("selling in year ", fmt_num(best$sale_year, 0),
+             " would be worth ", fmt_dkk(best$delta), " DKK more.")
+    },
+    "** ",
+    if (my$cost_faced <= 1) paste0(
+      "Because you face no marginal servicing cost, nothing pulls against ",
+      "holding: every extra year converts cover the used market pays only ",
+      fmt_pct(cap_default, 0), " for into cover you hold at full value. "
+    ) else paste0(
+      "There is a genuine trade-off here. Holding longer captures cover at full ",
+      "value instead of selling it at ", fmt_pct(cap_default, 0),
+      ", but it also means going on paying the ",
+      fmt_dkk(my$cost_faced), " DKK of servicing difference, which accrues at ",
+      fmt_num(my$rate / params$increment_km), " visits a year",
+      if (my$dealer && subaru_placeholder) paste0(
+        " — in your case entirely the ", fmt_km(travel_extra_toyota_km),
+        " km of extra driving, since the two tariffs are set equal"
+      ) else if (my$dealer) paste0(
+        " — in your case the tariff difference plus the ",
+        fmt_km(travel_extra_toyota_km), " km of extra driving"
+      ) else "", ". "
+    ),
+    if (nrow(early) > 0) paste0(
+      "Selling earlier than planned changes the value by ",
+      rng(range(early$delta)), " DKK on the adverse calibration, ",
+      "against a full gap value of ", fmt_dkk(max(my$gap_full)),
+      " DKK. On the benign calibration the same range is ",
+      rng(range({
+        a2 <- holding_tbl |> filter(calib == "A") |> arrange(sale_year)
+        cur_a <- a2$net_pv[which.min(abs(a2$sale_year - my$hold))]
+        a2$net_pv[a2$sale_year < my$hold] - cur_a
+      })), " DKK. ",
+      if (max(abs(early$delta)) < 0.1 * params$severity_buyer_dkk) paste0(
+        "Either way the amount at stake in the *timing* is small next to the ",
+        fmt_dkk(params$severity_buyer_dkk), " DKK the cover insures against, so ",
+        "**the sale date is not something to plan the purchase around** — and ",
+        "the warranty is not a reason to keep a car you would otherwise replace."
+      ) else paste0(
+        "That is large enough to be worth planning around: if an early sale is ",
+        "likely, weigh it before paying anything for the mileage ceiling."
+      )
+    ) else ""
+  )
+})
+```
+
+### 7.7 What if you drive more than you expect?
+
+Nobody knows their future annual mileage to the nearest thousand kilometres, and this contract is unusually sensitive to it: everything is zero below `r fmt_km(gap_opens_at)` km/yr and rises steeply above. So the useful question is not "what is it worth at my expected mileage" but "what does it cost me to be wrong about my mileage".
+
+```{r usage-compare}
+u_lo <- params$my_rate_compare
+u_hi <- params$my_rate
+u_rates <- sort(unique(c(u_lo, u_hi)))
+
+usage_tbl <- expand_grid(rate = u_rates, calib = names(cal)) |>
+  mutate(
+    gap = map2_dbl(calib, rate, \(k, r) gap_of(cal[[k]], r)$pv_dkk),
+    cost_ind = map_dbl(rate, \(r) cost_of(r, dealer_anyway = FALSE)$pv_dkk),
+    cost_dlr = map_dbl(rate, \(r) cost_of(r, dealer_anyway = TRUE)$pv_dkk),
+    sub_ends = pmin(params$age_ceiling, params$subaru_ceiling_km / rate)
+  )
+
+usage_tbl |>
+  transmute(
+    `Annual km` = fmt_km(rate),
+    Calibration = calib,
+    `Subaru cover ends` = paste0("yr ", fmt_num(sub_ends)),
+    `Gap value` = paste0(fmt_dkk(gap), " DKK"),
+    `Net, independent` = paste0(fmt_dkk(gap - cost_ind), " DKK"),
+    `Net, dealer anyway` = paste0(fmt_dkk(gap - cost_dlr), " DKK")
+  ) |>
+  show_table()
+```
+
+```{r usage-marginal, include=FALSE}
+step <- 1000
+marg <- tibble(rate = seq(gap_opens_at, max(u_rates) * 1.4, by = step)) |>
+  mutate(
+    gap_b = map_dbl(rate, \(r) gap_of(cal$B, r)$pv_dkk),
+    d_gap = (gap_b - lag(gap_b))
+  )
+
+gap_at <- \(r, k) gap_of(cal[[k]], r)$pv_dkk
+overshoot <- \(r) map_dbl(names(cal), \(k) gap_at(r, k)) |> set_names(names(cal))
+
+o_hi <- overshoot(u_hi)
+o_lo <- overshoot(u_lo)
+```
+
+```{r usage-prose, results='asis'}
+in_band <- marg$d_gap[marg$rate > min(u_rates) & marg$rate <= max(u_rates)]
+slope <- if (length(in_band) > 0 && any(is.finite(in_band))) {
+  mean(in_band, na.rm = TRUE)
+} else {
+  NA_real_
+}
+
+cat(if (length(u_rates) < 2) {
+  paste0(
+    "`my_rate_compare` is set to the same figure as `my_rate`, so there is ",
+    "nothing to compare. Set it to a different rate — the ", fmt_km(gap_opens_at),
+    " km/yr kink is the natural choice — to see what your mileage uncertainty ",
+    "is worth."
+  )
+} else if (max(u_rates) <= gap_opens_at) {
+  paste0(
+    "Both rates compared here sit at or below the ", fmt_km(gap_opens_at),
+    " km/yr kink, so the ceiling is worth exactly zero at either. The question ",
+    "only becomes live if your usage turns out higher than both."
+  )
+} else paste0(
+  "At ", fmt_km(u_lo), " km/yr the two contracts are ",
+  if (max(o_lo) < 1) "exactly identical" else paste0("worth ", rng(o_lo), " DKK apart"),
+  ". At ", fmt_km(u_hi), " km/yr the ceiling is worth ", rng(o_hi), " DKK. ",
+  "**So the value of the Toyota ceiling to you is created almost entirely by the ",
+  fmt_km(abs(u_hi - u_lo)), " km/yr between those two figures**",
+  if (is.finite(slope)) paste0(
+    ", and it is created steeply: each additional 1,000 km/yr over that stretch ",
+    "adds roughly ", fmt_dkk(slope), " DKK on the adverse calibration."
+  ) else "."
+))
+```
+
+```{r fig-usage, fig.height=4.8}
+u_seq <- seq(gap_opens_at * 0.75, max(u_rates) * 1.5, length.out = 140)
+
+u_curves <- expand_grid(calib = names(cal), r = u_seq) |>
+  mutate(
+    gap = map2_dbl(calib, r, \(k, rr) gap_of(cal[[k]], rr)$pv_dkk),
+    lab = map_chr(calib, \(k) cal[[k]]$label)
+  )
+
+u_marks <- tibble(
+  r = u_rates,
+  what = c(paste0("compare: ", lab_km(u_lo)), paste0("your estimate: ", lab_km(u_hi)))
+) |>
+  mutate(
+    gap = map_dbl(r, \(x) gap_at(x, "B")),
+    # A point sitting on the axis has no room for a label below it.
+    vj = ifelse(gap < max(u_curves$gap) * 0.08, -1.1, 1.7)
+  )
+
+ggplot(u_curves, aes(r, gap, colour = lab)) +
+  annotate("rect", xmin = u_lo, xmax = u_hi, ymin = -Inf, ymax = Inf,
+           fill = pal[["neutral"]], alpha = 0.10) +
+  geom_line(linewidth = 0.9) +
+  geom_point(data = u_marks, aes(r, gap), inherit.aes = FALSE, size = 2.4) +
+  geom_text(data = u_marks, aes(r, gap, label = what, vjust = vj),
+            inherit.aes = FALSE, hjust = -0.06, size = 2.9, colour = "grey25") +
+  scale_colour_manual(values = setNames(c(pal[["A"]], pal[["B"]]),
+                                        map_chr(names(cal), \(k) cal[[k]]$label))) +
+  scale_x_continuous(labels = lab_km) +
+  scale_y_continuous(labels = label_comma()) +
+  labs(
+    title = "The cost of being wrong about your own mileage",
+    subtitle = paste0("Gross gap value against realised usage. Shaded: the stretch between ",
+                      lab_km(u_lo), " and ", lab_km(u_hi), " km/yr"),
+    x = "Usage rate you actually turn out to drive (km/yr)",
+    y = "Gross value of the ceiling (DKK)",
+    caption = paste0(
+      "Everything left of ", lab_km(gap_opens_at), " km/yr is exactly zero: below the kink the two contracts are the same\n",
+      "contract. The curve is convex just above it, so the risk is asymmetric — driving 5,000 km/yr less than you\n",
+      "expect costs you little, while driving 5,000 more than you expect gains you more than proportionally.\n",
+      "If your mileage is uncertain, that asymmetry is itself a mild argument for the higher ceiling."
+    )
+  ) +
+  theme_note()
+```
+
+The asymmetry is real, but it is not free. Below `r fmt_km(gap_opens_at)` km/yr the gap value is identically zero, and the *number* of visits each owner must make at their own dealer is identical too, because Subaru's cover also lasts the full `r params$age_ceiling` years at those rates. What does not vanish is the journey: the Toyota workshop stays `r fmt_km(travel_extra_toyota_km)` km further away whatever your mileage, which is why the table above shows a cost of `r fmt_dkk(abs(usage_tbl$cost_dlr[1]))` DKK even at `r fmt_km(u_lo)` km/yr against a gap of zero. **So overestimating your mileage is not costless** — you would have bought cover you turned out not to need, and driven further to keep it.
+
+Underestimating is the expensive direction, and more than proportionally so, because the curve is convex through this range. A buyer genuinely uncertain between `r fmt_km(u_lo)` and `r fmt_km(u_hi)` km/yr should therefore weight the ceiling nearer the upper figure than the midpoint — though on these numbers the whole quantity in dispute is still small.
+
+### 7.8 Your decision, worked
+
+```{r my-decision}
+tibble(
+  Quantity = c(
+    "Usage rate assumed",
+    "Years you keep the car",
+    "Subaru cover ends",
+    "Toyota cover ends",
+    "Extra dealer visits required",
+    "Gross value of the higher ceiling",
+    "Value realised before you sell",
+    "Compliance cost you would face",
+    "Net value of the ceiling",
+    "Break-even independent price"
+  ),
+  Value = c(
+    paste0(fmt_km(my$rate), " km/yr"),
+    paste0(fmt_num(my$hold, 0), " yr"),
+    paste0("year ", fmt_num(my$term_subaru)),
+    paste0("year ", fmt_num(my$term_toyota)),
+    fmt_num(my$extra_visits, 0),
+    paste0(rng(my$gap_full), " DKK"),
+    paste0(rng(my$gap_held), " DKK"),
+    paste0(fmt_dkk(my$cost_faced), " DKK",
+           if (my$dealer) " (dealer either way; tariff gap plus travel)" else ""),
+    paste0(rng(my$net), " DKK"),
+    if (my$binds && all(is.finite(my$be_ind))) {
+      paste0(rng(my$be_ind), " DKK, small service")
+    } else "n/a"
+  )
+) |>
+  show_table(align = "lr")
+```
+
+```{r my-verdict, results='asis'}
+cat(if (!my$binds) {
+  paste0(
+    "**The two contracts are identical for you.** At ", fmt_km(my$rate),
+    " km/yr you never reach Subaru's ", fmt_km(params$subaru_ceiling_km),
+    " km ceiling inside the ", params$age_ceiling,
+    "-year age limit, so there is nothing to value. Choose on other grounds, ",
+    "and do not pay anything for the mileage ceiling."
+  )
+} else if (min(my$net) > 0) {
+  paste0(
+    "**The ceiling pays for you on both calibrations.** Net of the ",
+    fmt_dkk(my$cost_faced), " DKK of servicing difference you would face, it is ",
+    "worth ", rng(my$net), " DKK, plus the resale and documentation value in ",
+    "section 7.3. Section 7.10 shows how to keep that value for less by ",
+    "returning to the dealer only when Subaru's cover would have run out."
+  )
+} else if (max(my$net) > 0) {
+  paste0(
+    "**The ceiling pays only on the adverse calibration.** Against ",
+    fmt_dkk(my$cost_faced), " DKK of servicing difference",
+    if (my$dealer) paste0(
+      " — which in your case is entirely the ", fmt_km(travel_extra_toyota_km),
+      " km of extra driving, since Subaru's tariff is a placeholder set equal ",
+      "to Toyota's —"
+    ) else "",
+    " the gap is worth ", rng(my$gap_full), " DKK, so the net runs from ",
+    rng(my$net), " DKK. It turns on which fade scenario holds, which is the ",
+    "one thing no quote can settle. Two considerations pull towards taking it ",
+    "anyway: a warranty is a variance-reduction purchase rather than an ",
+    "expected-value one (section 1.2), and the resale and documentation ",
+    "channels (section 7.3) are not counted above. Section 7.10 shows how to ",
+    "cut the servicing side without giving up the cover."
+  )
+} else {
+  paste0(
+    "**On expected value the ceiling does not pay for you.** The servicing ",
+    "difference of ", fmt_dkk(my$cost_faced), " DKK exceeds the ",
+    rng(my$gap_full), " DKK of cover on both calibrations",
+    if (all(is.finite(my$be_ind))) paste0(
+      "; it would only pay if an independent charged more than ",
+      rng(my$be_ind), " DKK for a small service, against Toyota's ",
+      fmt_dkk(params$service_toyota_small_dkk)
+    ) else "",
+    ". Two caveats pull the other way and are not in that arithmetic: a ",
+    "warranty is a variance-reduction purchase rather than an expected-value ",
+    "one, so a risk-averse buyer should pay something above the expected value ",
+    "(section 1.2); and the resale and documentation channels (section 7.3) ",
+    "are plausibly larger than the claim value itself. Neither is large enough ",
+    "to close a gap of this size, but both narrow it."
+  )
+})
+```
+
+### 7.9 What if the pack costs more than assumed?
+
+Every figure in section 7 scales linearly in the buyer-side severity, which makes this the cleanest sensitivity in the note — and, given that the figure is a judgement rather than a quote (section 1.1), the most important one.
+
+```{r severity-sensitivity}
+sev_grid <- num(params$severity_buyer_sensitivity)
+
+expand_grid(severity = sev_grid, calib = names(cal)) |>
+  mutate(
+    gap = map2_dbl(calib, severity,
+                   \(k, s) gap_of(cal[[k]], my$rate, severity = s)$pv_dkk),
+    net_ind = gap - my$cost[["independent"]],
+    net_dlr = gap - my$cost[["dealer"]]
+  ) |>
+  transmute(
+    `Buyer-side severity` = paste0(fmt_dkk(severity), " DKK"),
+    `vs default` = paste0(fmt_num(severity / params$severity_buyer_dkk, 1), "x"),
+    Calibration = calib,
+    `Gap value` = paste0(fmt_dkk(gap), " DKK"),
+    `Net, independent` = paste0(fmt_dkk(net_ind), " DKK"),
+    `Net, dealer anyway` = paste0(fmt_dkk(net_dlr), " DKK")
+  ) |>
+  show_table(caption = paste0("At ", fmt_km(my$rate), " km/yr, ",
+                              fmt_num(my$hold, 0), "-year hold"))
+```
+
+```{r severity-breakeven, include=FALSE}
+# Severity at which the ceiling clears in the independent-workshop scenario.
+sev_unit <- map_dbl(names(cal), \(k) gap_of(cal[[k]], my$rate, severity = 1)$pv_dkk) |>
+  set_names(names(cal))
+sev_be <- ifelse(sev_unit > 0, my$cost[["independent"]] / sev_unit, NA_real_) |>
+  set_names(names(cal))
+# The same break-even under the scenario the buyer says applies to them.
+sev_be_faced <- ifelse(sev_unit > 0, my$cost_faced / sev_unit, NA_real_) |>
+  set_names(names(cal))
+```
+
+```{r severity-verdict, results='asis'}
+mult <- sev_be / params$severity_buyer_dkk
+plausible <- 3  # beyond about 3x the trade figure, no retail bill is credible
+
+cat(if (!my$binds || !is.finite(mult[["B"]])) {
+  paste0(
+    "At ", fmt_km(my$rate), " km/yr there is no gap to value, so severity ",
+    "scales nothing: the ceiling is worth zero at any pack price. The ",
+    "sensitivity above matters only once your usage passes ",
+    fmt_km(gap_opens_at), " km/yr."
+  )
+} else paste0(
+  "Raising severity narrows the shortfall but does not close it quickly. In the ",
+  "independent-workshop scenario the ceiling would only clear at a buyer-side ",
+  "severity of ", fmt_dkk(sev_be[["B"]]), " DKK on the adverse calibration — ",
+  fmt_num(mult[["B"]], 1), "x the default, which is high but not absurd for a ",
+  "retail pack with VAT. On the benign calibration it would take ",
+  fmt_num(mult[["A"]], 0), "x, which no realistic Danish invoice reaches. ",
+  if (mult[["B"]] > plausible) paste0(
+    "So on these servicing assumptions, correcting the severity error alone ",
+    "does not rescue the ceiling for a buyer using an independent workshop; it ",
+    "would take a higher severity *and* a lower dealer premium together."
+  ) else paste0(
+    "So a realistic retail severity could on its own flip the verdict in the ",
+    "adverse scenario, which is reason enough to get the quote."
+  ),
+  if (my$cost[["dealer"]] <= 0) paste0(
+    " In the franchised-dealer scenario the ceiling clears at any severity, ",
+    "because under equal premiums the cost it is weighed against is zero."
+  ) else paste0(
+    " In the franchised-dealer scenario the cost to beat is only ",
+    fmt_dkk(my$cost[["dealer"]]), " DKK, and the break-even severity there is ",
+    fmt_dkk(sev_be_faced[["B"]]), " DKK on the adverse calibration — against the ",
+    fmt_dkk(params$severity_buyer_dkk),
+    " DKK set. **On that scenario the decision sits almost exactly on the ",
+    "knife edge**, which is why a real quote for an out-of-warranty replacement ",
+    "would settle more than any other single number here."
+  )
+))
+```
+
+---
+
+### 7.10 Servicing strategy: you are not choosing for ten years at once
+
+The note has so far treated dealer-versus-independent as a single decision covering the whole term. It is not. Two features of the contract make it a question about *which visits*:
+
+1. **The base guarantee is unconditional.** Cover runs to `r params$base_years` yr / `r fmt_km(params$base_km)` km without any health check. At `r fmt_km(my$rate)` km/yr you reach `r fmt_km(params$base_km)` km in year **`r fmt_num(params$base_km / my$rate)`**. Health checks buy coverage only beyond that point.
+2. **Cover is reinstatable** (section 3.3). A gap in dealer servicing suspends the guarantee rather than destroying it, so an owner can use an independent early and return later.
+
+Together these allow a mixed strategy: independent up to `dealer_from_year`, franchised dealer after. The parameter applies to both cars, so it is the strategy being priced, not a handicap applied to one make.
+
+```{r strategy-table}
+d_grid <- sort(unique(c(num(params$dealer_from_grid), params$dealer_from_year)))
+d_grid <- d_grid[d_grid >= 0 & d_grid <= params$age_ceiling]
+
+t_base_yr <- params$base_km / my$rate
+
+strategy <- expand_grid(dealer_from = d_grid, calib = names(cal)) |>
+  mutate(
+    toy_spend = map_dbl(dealer_from, \(d) cost_of(
+      my$rate, dealer_anyway = my$dealer, dealer_from = d)$pv_toyota),
+    gap = map2_dbl(calib, dealer_from,
+                   \(k, d) gap_of(cal[[k]], my$rate, dealer_from = d)$pv_dkk),
+    exposed = map2_dbl(calib, dealer_from, \(k, d) suspended_exposure(
+      my$rate, cal[[k]]$a, cal[[k]]$b, cal[[k]]$sd_unit, d_crit,
+      params$age_ceiling, params$base_km, d, params$severity_buyer_dkk,
+      params$severity_decline, params$discount_real, params$repair_worthy)$pv_dkk),
+    visits_dealer = map_dbl(dealer_from, \(d) cost_of(
+      my$rate, dealer_anyway = my$dealer, dealer_from = d)$visits_at_toyota)
+  )
+
+strategy |>
+  filter(calib == "B") |>
+  arrange(dealer_from) |>
+  transmute(
+    `Dealer from year` = fmt_num(dealer_from, 0),
+    `Visits at Toyota` = fmt_num(visits_dealer, 0),
+    `Your servicing spend` = paste0(fmt_dkk(toy_spend), " DKK"),
+    `Saved vs always-dealer` = paste0(
+      fmt_dkk(toy_spend[dealer_from == 0][1] - toy_spend), " DKK"),
+    `Gap value kept` = paste0(fmt_dkk(gap), " DKK"),
+    `Own cover given up` = paste0(fmt_dkk(exposed), " DKK")
+  ) |>
+  show_table(caption = paste0(
+    "Calibration B (adverse) at ", fmt_km(my$rate),
+    " km/yr. Spend is the present value of your own servicing on the Toyota, ",
+    "including travel. Base cover runs unconditionally to year ",
+    fmt_num(t_base_yr), "; Subaru's ceiling falls in year ",
+    fmt_num(my$term_subaru), "."
+  ))
+```
+
+```{r strategy-reads, include=FALSE}
+s0 <- strategy |> filter(calib == "B", dealer_from == 0)
+# Latest start that costs nothing in gap value, to the nearest grid point.
+free_start <- strategy |>
+  filter(calib == "B", gap >= 0.999 * s0$gap) |>
+  slice_max(dealer_from, n = 1, with_ties = FALSE)
+```
+
+Before reading the columns, note the scale of the first one. Holding Toyota cover for the full term costs **`r fmt_dkk(s0$toy_spend)` DKK** of servicing in present value, to protect a contract gap worth `r fmt_dkk(s0$gap)` DKK on the adverse calibration. The upkeep is more than an order of magnitude larger than the thing it is buying. That is not an argument against servicing the car — you would service it anyway — but it is decisive about how much of that spend should be attributed to the *warranty*.
+
+**Delaying costs nothing until Subaru's cover runs out.** The gap is the window where Toyota covers and Subaru does not, so it cannot open before year `r fmt_num(my$term_subaru)` whatever you do. Returning to the dealer by then keeps the entire gap value while cutting your Toyota visits from `r fmt_num(s0$visits_dealer, 0)` to `r fmt_num(free_start$visits_dealer, 0)` — a saving of **`r fmt_dkk(s0$toy_spend - free_start$toy_spend)` DKK** on the servicing bill for no loss in the contract comparison at all. Delay past that point and the gap itself starts to shrink.
+
+**What you give up is your own cover, not the comparison.** Between year `r fmt_num(t_base_yr)` and your return to the dealer, neither car is covered — that is the last column, and it is a genuine cost that cancels out of the Toyota-versus-Subaru arithmetic while remaining entirely real to you. On the adverse calibration a return in year `r fmt_num(free_start$dealer_from, 0)` exposes you to `r fmt_dkk(free_start$exposed)` DKK of uninsured crossing risk.
+
+Two cautions before acting on this. The strategy depends on the reinstatement reading, which section 3.3 flags as inferred rather than stated for the battery. And it says nothing about **Toyota Relax**, the whole-vehicle extended warranty, which is genuinely sequential — it extends 12 months per service, so gaps break the chain. At your mileage Relax is limited anyway: its `r fmt_km(185000)` km cap arrives in year `r fmt_num(185000 / my$rate)`, so it is a low-mileage product that you would exhaust well before the age ceiling regardless.
+
+#### The drive to the workshop
+
+```{r travel-table}
+per_visit_extra <- travel_extra_toyota_km * params$travel_cost_dkk_per_km
+
+tibble(cost_per_km = num(params$travel_cost_sensitivity)) |>
+  mutate(
+    always = map_dbl(cost_per_km, \(c) cost_of(
+      my$rate, dealer_anyway = my$dealer, prices = price_set(per_km = c),
+      dealer_from = 0)$pv_dkk),
+    delayed = map_dbl(cost_per_km, \(c) cost_of(
+      my$rate, dealer_anyway = my$dealer, prices = price_set(per_km = c),
+      dealer_from = free_start$dealer_from)$pv_dkk)
+  ) |>
+  transmute(
+    `Cost per km` = paste0(fmt_num(cost_per_km, 2), " DKK"),
+    `Extra per Toyota visit` = paste0(
+      fmt_dkk(travel_extra_toyota_km * cost_per_km), " DKK"),
+    `Servicing differential, dealer from new` = paste0(fmt_dkk(always), " DKK"),
+    !!paste0("Differential, dealer from year ",
+             fmt_num(free_start$dealer_from, 0)) := paste0(fmt_dkk(delayed), " DKK")
+  ) |>
+  show_table(caption = paste0(
+    "The Toyota dealer is ", fmt_km(travel_extra_toyota_km),
+    " km further, round trip, than the Subaru dealer."
+  ))
+```
+
+```{r travel-prose, results='asis'}
+extra <- travel_extra_toyota_km
+per_visit <- abs(extra) * params$travel_cost_dkk_per_km
+visits_yr <- my$rate / params$increment_km
+hours_yr <- abs(extra) * visits_yr / 60
+mean_price <- mean(c(params$service_toyota_small_dkk, params$service_toyota_large_dkk))
+dealer_only <- cost_of(my$rate, dealer_anyway = TRUE, dealer_from = 0)$pv_dkk
+
+cat(if (abs(extra) < 1) {
+  paste0(
+    "The two workshops are equidistant on the figures set, so travel drops out ",
+    "of the comparison entirely. If that is not right, set the round-trip ",
+    "distances in the parameter block: the difference is worth about ",
+    fmt_dkk(10 * params$travel_cost_dkk_per_km * visits_yr),
+    " DKK over the term for every 10 km of asymmetry."
+  )
+} else {
+  nearer <- if (extra > 0) "Toyota" else "Subaru"
+  further <- if (extra > 0) "Subaru" else "Toyota"
+  paste0(
+    "The ", nearer, " workshop is ", fmt_km(abs(extra)),
+    " km further round trip than the ", further, " one, which at ",
+    fmt_num(params$travel_cost_dkk_per_km, 2), " DKK per km adds ",
+    fmt_dkk(per_visit), " DKK to every ", nearer, " visit — about ",
+    fmt_pct(per_visit / mean_price, 0), " on top of the service price. At ",
+    fmt_num(visits_yr), " visits a year that is roughly ", fmt_num(hours_yr, 1),
+    " hours a year of extra driving. The per-km figure is a judgement, not a ",
+    "quote: set it to cover energy, tyres and wear, plus whatever you put on ",
+    "that time.\n\n",
+    "**This matters more than it first appears, because it is the one thing ",
+    "that breaks the tie.** If you would use a franchised dealer regardless, ",
+    "and the two tariffs turn out equal, the servicing differential would be ",
+    "exactly zero — the two makes cancelling. They do not cancel once distance ",
+    "is counted: on these figures the extra journeys alone come to **",
+    fmt_dkk(abs(dealer_only)), " DKK** over the term, ",
+    if (extra > 0) "against you" else "in your favour",
+    ", which is of the same order as the entire gap value of ",
+    rng(my$gap_full), " DKK. A ", fmt_km(abs(extra)),
+    " km detour, ", fmt_num(visits_yr), " times a year for ",
+    params$age_ceiling, " years, is not a detail."
+  )
+})
+```
+
+An independent closer to home would save on both counts at once, which is why the two decisions interact: **the case for an independent is strongest in exactly the years when the cover is worth least**, and that is the period the strategy above already hands to them.
+
+---
+
+## 8. Why the million kilometres is cheap: the self-financing argument
+
+Section 4 gives one explanation for the low cost of Toyota's ceiling: it sits above $x_{\text{crit}}$, so it censors nothing, so it costs nothing. That holds, but it is the weaker of the two available explanations. The stronger one follows from the increment rule.
+
+Every `r fmt_km(params$increment_km)` km of coverage is purchased with a dealer visit. Riding the coverage to the ceiling requires `r fmt_num(checks_to_toyota, 0)` visits. At a gross margin of `r fmt_dkk(params$service_margin_low)`–`r fmt_dkk(params$service_margin_high)` DKK per visit, that is **`r fmt_dkk(checks_to_toyota * params$service_margin_low)`–`r fmt_dkk(checks_to_toyota * params$service_margin_high)` DKK of service margin against a `r fmt_dkk(params$severity_maker_dkk)` DKK pack**. Subaru's `r fmt_km(params$subaru_ceiling_km)` km ceiling generates `r fmt_num(checks_to_subaru, 0)` visits, or `r fmt_dkk(checks_to_subaru * params$service_margin_low)`–`r fmt_dkk(checks_to_subaru * params$service_margin_high)` DKK.
+
+```{r service-margin}
+tibble(
+  Make = c("Toyota", "Subaru"),
+  ceiling = c(params$toyota_ceiling_km, params$subaru_ceiling_km)
+) |>
+  mutate(
+    visits = checks_required(ceiling, params$base_km, params$increment_km,
+                             from_zero = TRUE),
+    `Mileage ceiling` = fmt_km(ceiling),
+    `Visits from zero` = fmt_num(visits, 0),
+    `Margin @ low (DKK)` = fmt_dkk(visits * params$service_margin_low),
+    `Margin @ high (DKK)` = fmt_dkk(visits * params$service_margin_high),
+    `Cover ratio vs pack` = paste0(
+      fmt_num(visits * params$service_margin_low / params$severity_maker_dkk, 2), "–",
+      fmt_num(visits * params$service_margin_high / params$severity_maker_dkk, 2), "x"
+    )
+  ) |>
+  select(Make, `Mileage ceiling`, `Visits from zero`, `Margin @ low (DKK)`,
+         `Margin @ high (DKK)`, `Cover ratio vs pack`) |>
+  show_table()
+```
+
+Three consequences:
+
+1. **The warranty is not a net liability.** It is a service subscription with a guarantee attached. The customer funds the reserve, and at the upper end of the margin range the programme is cash-positive against a *certain* claim, not merely a probable one.
+2. **The ceiling is a throughput target, not a risk parameter.** Raising it from 650,000 to `r fmt_km(params$toyota_ceiling_km)` km adds `r fmt_num((params$toyota_ceiling_km - 650000) / params$increment_km, 0)` potential service visits per high-mileage customer. Read as a service-network revenue instrument, the number is legible; read as a statement about cell chemistry, it is not.
+3. **The lapse mechanism and the revenue mechanism are the same mechanism.** Every missed visit simultaneously terminates coverage and forgoes margin, so the programme is self-limiting in exactly the population that costs most.
+
+This also disposes of the puzzle in section 7.2. Adverse selection is less dangerous than it looks, because the high-mileage customers who extract the most from the contract are the same ones who pay the most into it, at a rate proportional to their usage. The contract is close to usage-priced by construction.
+
+---
+
+## 9. Using this in a negotiation
+
+The manufacturer-side arithmetic in sections 6 and 8 is not just background. It tells a buyer what each side of the table is actually protecting, which is the useful thing to know before discussing price.
+
+```{r negotiation-numbers}
+tibble(
+  Quantity = c(
+    "What the extra coverage costs Toyota to grant, per car sold",
+    "What it is worth to you, gross",
+    "What Toyota's service programme earns if you comply to the ceiling",
+    "Cost of one pack replacement"
+  ),
+  Amount = c(
+    paste0(rng(decomp$total * params$severity_maker_dkk), " DKK"),
+    if (my$binds) paste0(rng(my$gap_full), " DKK") else "0 DKK",
+    paste0(rng(checks_to_toyota *
+                 c(params$service_margin_low, params$service_margin_high)),
+           " DKK"),
+    paste0(fmt_dkk(params$severity_maker_dkk), " DKK")
+  ),
+  Source = c("Section 6.3", "Section 7.8", "Section 8", "Section 1")
+) |>
+  show_table(align = "lrl")
+```
+
+Four things follow.
+
+1. **Do not pay a meaningful premium for the mileage ceiling.** It costs Toyota `r fmt_dkk(decomp$total[1] * params$severity_maker_dkk)`–`r fmt_dkk(decomp$total[2] * params$severity_maker_dkk)` DKK per car sold to grant — an accrual, not a cost they feel per sale. A salesperson presenting the million kilometres as a major concession is describing something that is close to free to give. If it is being priced into the car at more than a few thousand DKK, that is not what it is worth.
+
+2. **Their real interest is the service stream, so negotiate there.** The `r fmt_num(checks_to_toyota, 0)` visits needed to ride the coverage to the ceiling are worth `r fmt_dkk(checks_to_toyota * params$service_margin_low)`–`r fmt_dkk(checks_to_toyota * params$service_margin_high)` DKK of gross margin, `r fmt_num(checks_to_toyota * params$service_margin_low / params$severity_maker_dkk, 1)`–`r fmt_num(checks_to_toyota * params$service_margin_high / params$severity_maker_dkk, 1)`× the price of the pack they are guaranteeing. The concession worth asking for is therefore **a capped or prepaid service price**, not a discount on the car. A prepaid plan at close to independent-workshop rates converts the ceiling from something that costs you `r fmt_dkk(my$cost_full)` DKK to hold into something close to free — which, per section 7.5, is the entire decision.
+
+3. **The ceiling is not a quality signal, so do not pay for reassurance.** Two firms building the same pack chose ceilings a factor of `r fmt_num(params$toyota_ceiling_km / params$subaru_ceiling_km, 0)` apart (section 10). Whatever generates that spread, it is not a difference of belief about the cells. If a longer warranty is being sold to you as evidence of a better battery, the comparison refutes it directly: the battery is the same battery.
+
+4. **Symmetrically, Subaru's shorter ceiling is cheap for them to extend.** Moving from `r fmt_km(params$subaru_ceiling_km)` to `r fmt_km(400000)` km would cost them roughly `r fmt_dkk((cap_table$claims_a[cap_table$cap_km == 400000] - cap_table$claims_a[cap_table$cap_km == params$subaru_ceiling_km]) * params$severity_maker_dkk)`–`r fmt_dkk((cap_table$claims_b[cap_table$cap_km == 400000] - cap_table$claims_b[cap_table$cap_km == params$subaru_ceiling_km]) * params$severity_maker_dkk)` DKK per car in expected claims. If you are a high-mileage buyer and Subaru is otherwise the better car, an extended-mileage clause is a cheaper thing for a dealer to concede than an equivalent cash discount — and worth asking for in writing.
+
+> **A caution on all four.** These are arguments about what the *warranty difference* is worth. They say nothing about which car is better, and the mileage ceiling is a small term in a purchase this size. Use them to stop the warranty being oversold, not as the basis of the decision.
+
+---
+
+## 10. What can be inferred about the failure rate
+
+Very little — and the increment mechanism sharpens the point rather than weakening it.
+
+A single announced warranty term is one scalar emitted by an optimisation with many free parameters: severity, compliance rate, service margin, discount rate, competitive positioning, residual-value and lease-book support. The system is badly underdetermined; the hazard is not identified by the contract.
+
+The decisive evidence: **two firms with the same cells, the same pack, the same threshold, the same base term and the same increment rule have chosen mileage ceilings differing by a factor of `r fmt_num(params$toyota_ceiling_km / params$subaru_ceiling_km, 0)`, producing `r fmt_num(uncapped[["A"]] / cap_table$claims_a[cap_table$cap_km == params$subaru_ceiling_km], 0)`x and `r fmt_num(uncapped[["B"]] / cap_table$claims_b[cap_table$cap_km == params$subaru_ceiling_km], 1)`x differences in expected claims** on the benign and adverse calibrations respectively. The engineering belief is common; the contracts are not. Whatever generates the spread, it is not the failure distribution. If anything, Subaru declining to follow on identical hardware is mild evidence *against* reading Toyota's number as a confidence signal — had fade data been the binding input, one would expect convergence.
+
+What *would* identify the failure distribution: warranty accrual per unit from the financial statements; **claims development triangles** by sale cohort and months in service — the standard actuarial data layout, a matrix with one row per cohort of cars sold and one column per elapsed month, whose cells hold claims paid to date, so that reading across a row traces how a single cohort's claims emerge over time and reading down a column compares cohorts at equal maturity; and fleet SoH telemetry.
+
+Note also that the informational content sits in the **threshold**, not the distance. If mean fade at 10 years is ~15% with cross-sectional sigma ~4%, a 30-point threshold sits at $z \approx 3.75$ (claim rate ~$10^{-4}$) while a 20-point threshold sits at $z \approx 1.25$ (~10%). A ten-point shift moves expected claims by three orders of magnitude. That asymmetry is precisely why the mileage ceiling can be inflated freely.
+
+---
+
+## 11. Open questions and model weaknesses
+
+### 11.1 Sensitivity ranking
+
+The two financial parameters that scale the PV enter with near-identical leverage but wildly different uncertainty.
+
+```{r elasticity}
+t_ref <- buyer_gap |>
+  filter(rate == params$ref_rate, calib == "A") |>
+  pull(t_bar)
+
+span_decline <- 100 * (max(decline_grid) - min(decline_grid))
+span_discount <- 100 * (max(discount_cred) - min(discount_cred))
+
+tibble(
+  Parameter = c(
+    paste0("Severity decline δ (at ", fmt_pct(params$severity_decline, 0), ")"),
+    paste0("Real discount r (at ", fmt_pct(params$discount_real, 0), ")")
+  ),
+  `d lnPV / d param` = c(
+    fmt_num(-t_ref / (1 - params$severity_decline), 2),
+    fmt_num(-t_ref / (1 + params$discount_real), 2)
+  ),
+  `PV multiple per -1pp` = c(
+    paste0(fmt_num(exp(t_ref / (1 - params$severity_decline) * 0.01), 2), "x"),
+    paste0(fmt_num(exp(t_ref / (1 + params$discount_real) * 0.01), 2), "x")
+  ),
+  `Credible range` = c(
+    paste0(fmt_pct(min(decline_grid), 0), "–", fmt_pct(max(decline_grid), 0),
+           " (", fmt_num(span_decline, 0), " pp)"),
+    paste0(fmt_pct(min(discount_cred), 0), "–", fmt_pct(max(discount_cred), 0),
+           " (", fmt_num(span_discount, 0), " pp)")
+  )
+) |>
+  show_table(align = "lrrr")
+```
+
+Evaluated at $\bar{t} = `r fmt_num(t_ref, 2)`$ the two elasticities are almost the same, so per percentage point they move the answer by almost the same factor. The ranges are not. The credible range for $\delta$ spans `r fmt_num(span_decline, 0)` percentage points (`r fmt_pct(min(decline_grid), 0)`–`r fmt_pct(max(decline_grid), 0)`) against `r fmt_num(span_discount, 0)` pp for the real discount rate (`r fmt_pct(min(discount_cred), 0)`–`r fmt_pct(max(discount_cred), 0)`; the `r fmt_pct(max(discount_grid), 0)` column in section 7.1 is shown only to demonstrate insensitivity, not as a defensible value). **$\delta$ therefore carries roughly `r fmt_num(span_decline / span_discount, 0)` times the uncertainty at the same leverage**, and it is the parameter that deserves the attention that discount-rate debates usually absorb.
+
+```{r decline-sensitivity}
+expand_grid(calib = names(cal), decline = decline_grid) |>
+  mutate(pv = map2_dbl(calib, decline,
+                       \(k, d) gap_of(cal[[k]], params$ref_rate, decline = d)$pv_dkk)) |>
+  mutate(`Severity decline` = fmt_pct(decline, 0)) |>
+  select(`Severity decline`, calib, pv) |>
+  pivot_wider(names_from = calib, values_from = pv,
+              names_prefix = "PV, calibration ") |>
+  mutate(across(starts_with("PV"), \(x) fmt_dkk(x))) |>
+  show_table(align = "lrr",
+             caption = paste0("Gap PV at ", fmt_km(params$ref_rate),
+                              " km/yr, real discount ",
+                              fmt_pct(params$discount_real, 0)))
+```
+
+### 11.2 Remaining weaknesses
+
+1. **Separability of $b$ in $r$.** The model assumes the throughput coefficient is independent of usage rate. It almost certainly is not: high-mileage drivers DC-fast-charge more, run wider SoC windows, and spend more time at elevated cell temperature. If $b = b(r)$ is increasing, $x_{\text{crit}}$ shrinks in the usage tail — a 100,000 km/yr taxi might cross `r fmt_pct(params$soh_threshold, 0)` at 300,000 km rather than `r fmt_km(params$cal_a_km_crit_pure)` — pulling the bite point down and giving the mileage cap a genuine actuarial rationale the separable model denies it. **The parameter most worth a prior**, and testable against fleet telemetry.
+2. **Calibration spread.** A vs B differ by a factor of `r fmt_num(pv_at(params$ref_rate, "B") / pv_at(params$ref_rate, "A"), 1)` in the buyer-level answer at `r fmt_km(params$ref_rate)` km/yr, swamping every financial assumption including the discount rate (section 7.1).
+3. **$\pi$ is unobserved.** The lapse results in 6.2 are highly sensitive to per-check compliance, and `r fmt_num(extra_to_toyota, 0)` at-risk checks compound any error geometrically. Real-world $\pi$ for a `r fmt_km(params$increment_km)` km interval is probably well below annual-service compliance rates.
+4. **Service margin is a guess.** The `r fmt_dkk(params$service_margin_low)`–`r fmt_dkk(params$service_margin_high)` DKK per visit range drives section 8 entirely. Danish dealer pricing should be checked.
+5. **Repair-worthiness is a flat factor.** $\rho = `r params$repair_worthy`$ is applied uniformly, but it should decline with odometer — a `r fmt_km(600000)` km car is less likely to be worth a new pack than a `r fmt_km(250000)` km one. Since the gap probability is concentrated at high odometers, a declining $\rho$ would reduce the PV figures, most in the high-mileage rows where they are largest. Left flat here, but it is a known optimistic bias.
+6. **The `r fmt_km(params$subaru_no_grant_km)` km Subaru clause is unmodelled** (section 2). Small, and conservative in direction.
+7. **Subaru's Danish terms remain unverified.** Toyota's have now been read directly and confirm every structural assumption (section 1). Subaru's rest on the Norwegian press release, and their Danish *garantibetingelser* and service tariff are both still outstanding — the note is now materially better sourced on one side than the other.
+8. **Commercial-use exclusions: confirmed to exist, and narrower than assumed.** Toyota Denmark states *"Særlige regler gælder for Proace og Taxa"* and links to separate commercial pages, which have not been read here. It is easy to read as the item most capable of making the cover worthless for a high-mileage buyer, but that conflates mileage with commercial status. The exclusion names a *van model* and *licensed taxi use*; it is not a distance test. A private owner is outside it at any mileage. It remains load-bearing for the adverse-selection argument in section 7.2, and it is unread, but it is not an item on a private buyer's checklist. The one residual channel is resale: if the marginal second-hand buyer of a very high-mileage EV were a commercial operator, the exclusion would trim the resale premium in section 7.6 — plausible in principle, and small enough not to move the figures here.
+9. **Which lapse regime applies is inferred, not stated.** Section 3.3 defaults to reinstatement on the strength of the Relax wording and the battery page's "activate a new guarantee at any time" language. Neither says in terms what happens to the *battery* guarantee after a missed check. Section 6.2 shows both; the choice moves fleet-level lapse effects by an order of magnitude, though it leaves the buyer-level sections untouched.
+9. **Realised vs modelled claims.** Payout requires demonstrating sub-`r fmt_pct(params$soh_threshold, 0)` SoH. Measurement disputes, "normal use" clauses and fast-charging abuse exclusions all sit between the modelled crossing probability and a cheque.
+
+---
+
+## 12. Bottom line
+
+- The mechanisms are identical. Only the mileage ceiling differs: `r fmt_km(params$toyota_ceiling_km)` vs `r fmt_km(params$subaru_ceiling_km)` km.
+- A mileage cap binds iff it sits below $x_{\text{crit}}$. Toyota's is above; Subaru's is well below.
+- Reaching Toyota's ceiling requires `r fmt_num(checks_to_toyota, 0)` dealer visits. The coverage is bought, not given — which is the real reason it is cheap to offer.
+- Gross of servicing cost, the difference is worth **nothing below `r fmt_km(gap_opens_at)` km/yr**, `r fmt_dkk(pv_at(params$ref_rate, "A"))`–`r fmt_dkk(pv_at(params$ref_rate, "B"))` DKK at `r fmt_km(params$ref_rate)`, and `r fmt_dkk(pv_at(max(buyer_rates), "A"))`–`r fmt_dkk(pv_at(max(buyer_rates), "B"))` DKK at `r fmt_km(max(buyer_rates))`.
+- Net of servicing cost there are **two answers, not one**, and at the buyer's mileage both point the same way. Toyota servicing is dearer than Subaru's by `r fmt_pct(1 - params$service_subaru_small_dkk / params$service_toyota_small_dkk, 1)`–`r fmt_pct(1 - params$service_subaru_large_dkk / params$service_toyota_large_dkk, 1)` per visit, and the Toyota workshop is further away; together those outweigh the gap on both calibrations.
+- **You are not choosing for ten years at once.** The base guarantee needs no health check, and cover is reinstatable, so the visits that actually buy the contested cover are the late ones. Returning to a dealer only when Subaru's ceiling falls keeps the whole gap value and cuts the servicing bill sharply (section 7.10).
+- **Both franchised service tariffs are quoted**, and the verdict turns on a margin of a few percent between them. That makes it fragile in a checkable way: `r fmt_pct(share_extrap, 0)` of the servicing difference rests on Subaru prices extrapolated beyond the `r fmt_km(params$subaru_quoted_to_km)` km the quote covers, and an uplift of `r fmt_pct(uplift - 1, 1)` on those would reverse it (section 7.4). What remains genuinely missing is an independent quote and the buyer-side cost of a pack. The commercial-use exclusion, flagged in earlier drafts as the top item to verify, is a manufacturer-side defence that does not reach a private owner at any mileage (section 7.2).
+- A warranty is a variance-reduction purchase, not an expected-value one. The case for paying up is strongest precisely where the mean cannot be pinned down — and section 1.2 argues the PVs above are lower bounds for a buyer who cannot pool the risk.
+
+**If you are deciding between the two cars**, the order of operations is:
+
+1. **Establish your usage rate honestly.** Below `r fmt_km(gap_opens_at)` km/yr the two contracts are identical and the ceiling is worth exactly nothing — though if the Toyota workshop is further away, choosing it still costs you the extra journeys (section 7.7).
+2. **Ask Subaru what a service costs past `r fmt_km(params$subaru_quoted_to_km)` km.** Both tariffs are now quoted, but Subaru's only to `r fmt_km(params$subaru_quoted_to_km)` km — the first five of `r nrow(vis)` visits at your mileage — and the verdict rests on a `r fmt_pct(1 - params$service_subaru_small_dkk / params$service_toyota_small_dkk, 1)` margin holding across the other `r nrow(vis) - sum(vis$km <= params$subaru_quoted_to_km)`. An uplift of `r fmt_pct(uplift - 1, 1)` reverses it. Get one independent quote too, which decides the other scenario; section 7.5 gives the threshold it has to beat.
+3. **Ask a dealer for a written out-of-warranty pack replacement price.** The `r fmt_dkk(params$severity_buyer_dkk)` DKK used here is a trade-cost figure standing in for a retail bill, and it makes every buyer-side number an underestimate (section 7.9).
+4. **Ask whether you would dealer-service anyway** — and, if so, how far away each workshop is. That answer, plus the distance, decides more than the whole degradation model does.
+5. **Put two questions to the dealer about the health check.** Both are cheap to ask and both move real money. *Does a missed check end the battery guarantee, or can a later check reactivate it?* — section 7.10's strategy, worth five figures, depends on the answer being the second. *And is the extension one year or `r fmt_km(params$increment_km)` km, whichever first?* — the battery page says `r fmt_km(params$increment_km)` km, the general warranty page says 12 months, and at your mileage that is the difference between two visits a year and one.
+6. **Do not pay much for the ceiling itself.** It costs the manufacturer `r fmt_dkk(decomp$total[1] * params$severity_maker_dkk)`–`r fmt_dkk(decomp$total[2] * params$severity_maker_dkk)` DKK per car to grant. Negotiate on service pricing instead, where the money actually is (section 9).
+
+---
+
+```{r integrity, include=FALSE}
+# Post-hoc invariants. These exist because a variable-name collision once left
+# `cap_grid` holding capitalisation shares instead of mileage ceilings, which
+# silently replaced section 6.1's table with kilometre figures of 0 and 1
+# without any error being raised. Anything that would produce nonsense rather
+# than a crash belongs here.
+stopifnot(
+  "cap_grid must still hold mileage ceilings, not shares" =
+    all(cap_grid > 1000),
+  "cap_table must match the cap grid" =
+    identical(sort(cap_table$cap_km), sort(cap_grid)),
+  "retained liability must lie in [0, 1]" =
+    all(cap_table$retained_a >= 0 & cap_table$retained_a <= 1.0001) &&
+    all(cap_table$retained_b >= 0 & cap_table$retained_b <= 1.0001),
+  "retained liability must rise with the cap" =
+    !is.unsorted(cap_table$retained_a) && !is.unsorted(cap_table$retained_b),
+  "fleet truncated must fall as the cap rises" =
+    !is.unsorted(rev(cap_table$truncated)),
+  "gap must be zero at or below the kink rate" =
+    all(buyer_gap$pv_dkk[buyer_gap$rate <= gap_opens_at] == 0),
+  "gap PV must rise with usage rate within a calibration" =
+    all(buyer_gap |> arrange(calib, rate) |> group_by(calib) |>
+          summarise(ok = !is.unsorted(pv_dkk), .groups = "drop") |> pull(ok)),
+  "resale split must add back to the full gap" =
+    all(abs((holding_tbl$captured_pv + holding_tbl$residual_pv) -
+              holding_tbl$gap_full) < 1e-6),
+  "capitalised resale cannot exceed the value handed on" =
+    all(holding_tbl$resale_pv <= holding_tbl$residual_pv + 1e-9),
+  "servicing differential must grow with the usage rate" =
+    !is.unsorted(serv |> filter(!dealer_anyway) |> arrange(rate...1) |>
+                   pull(pv_dkk)),
+  "delaying the dealer must not increase Toyota spend" =
+    !is.unsorted(rev(strategy |> filter(calib == "B") |> arrange(sale_year <- dealer_from) |>
+                       pull(toy_spend))),
+  "severity scaling must be proportional" =
+    abs(gap_of(cal$B, my$rate, severity = 2 * params$severity_buyer_dkk)$pv_dkk -
+          2 * gap_of(cal$B, my$rate)$pv_dkk) < 1e-6
+)
+```
+
+## Appendix A — Monte Carlo cross-check
+
+```{r simulation-check, eval=params$use_simulation, cache=TRUE, echo=FALSE}
+sim_check <- expand_grid(
+  rate = buyer_rates[buyer_rates > gap_opens_at],
+  calib = names(cal)
+) |>
+  mutate(
+    analytic = map2_dbl(calib, rate, \(k, r) gap_of(cal[[k]], r)$p_gap),
+    mc = map2_dbl(calib, rate, \(k, r) {
+      cc <- cal[[k]]
+      sim <- simulate_fleet(params$n_sim, cc$a, cc$b, cc$sd_unit, d_crit,
+                            params$med_rate, params$sdlog_rate,
+                            fixed_rate = r, seed = params$seed)
+      ts <- warranty_term(r, params$age_ceiling, params$subaru_ceiling_km)
+      tt <- warranty_term(r, params$age_ceiling, params$toyota_ceiling_km)
+      mean(sim$t_fail > ts & sim$t_fail <= tt)
+    })
+  ) |>
+  mutate(
+    mc_se = sqrt(mc * (1 - mc) / params$n_sim),
+    z = (mc - analytic) / mc_se
+  )
+
+sim_check |>
+  transmute(
+    `Annual km` = fmt_km(rate),
+    Calibration = calib,
+    `Analytic p(gap)` = fmt_pct(analytic, 4),
+    `MC p(gap)` = fmt_pct(mc, 4),
+    `MC s.e. (pp)` = fmt_num(100 * mc_se, 4),
+    `z` = fmt_num(z, 2)
+  ) |>
+  show_table(caption = paste0("Analytic vs ", fmt_km(params$n_sim),
+                              " Monte Carlo draws, seed ", params$seed))
+```
+
+```{r simulation-note, results='asis'}
+if (!params$use_simulation) {
+  cat(
+    "*Not run. Set `use_simulation: TRUE` in the YAML header to reproduce the ",
+    "analytic results against ", fmt_km(params$n_sim), " Monte Carlo draws. ",
+    "The check is disabled by default because the analytic conditional CDF is ",
+    "exact, and because at calibration A's gap probabilities (~1e-4) the Monte ",
+    "Carlo standard error is a substantial fraction of the estimate — the ",
+    "simulation is the noisier of the two, not the reference.*",
+    sep = ""
+  )
+}
+```
+
+---
+
+## Appendix B — Model code
+
+```{r model-source, code=readLines("R/model.R"), eval=FALSE, echo=TRUE}
+```
+
+### Document chunks
+
+```{r all-code, ref.label=setdiff(knitr::all_labels(), c("model-source", "all-code")), eval=FALSE, echo=TRUE}
+```
+
+---
+
+## Appendix C — Sources
+
+- **Toyota Ireland**, New Car and Battery Warranty — <https://www.toyota.ie/owners/warranty>. EV Battery Guarantee: `r fmt_pct(params$soh_threshold, 0)` minimum capacity to `r params$base_years` years or `r fmt_km(params$base_km)` km. On passing the EV Health Check, EV Battery Extended Care for 1 year or `r fmt_km(params$increment_km)` km, whichever first, up to `r params$age_ceiling` years vehicle age or `r fmt_km(params$toyota_ceiling_km)` km. Mirrored at <https://www.toyotaservice.ie/owners/warranty>.
+- **Subaru Norge**, "Subaru lanserer 10 års garanti i Norge", 16 January 2026 — <https://www.mynewsdesk.com/no/subaru-norge/pressreleases/subaru-lanserer-10-aars-garanti-i-norge-3426097>. `r params$age_ceiling` yr / `r fmt_km(params$subaru_ceiling_km)` km service-activated warranty including the high-voltage battery at `r fmt_pct(params$soh_threshold, 0)` minimum capacity, MY2026+, Subaru Norge AS imports; `r fmt_km(params$increment_km)` km per-service increment; no grant past `r fmt_km(params$subaru_no_grant_km)` km.
+- Subaru base battery terms of `r params$base_years` yr / `r fmt_km(params$base_km)` km corroborated for Denmark (trade press), Germany (Subaru press release, June 2022), and equivalently 8 yr / 100,000 mi for UK and US.
+- Toyota Australia dealer material corroborates the `r params$base_years` yr / `r fmt_km(params$base_km)` km base with `r fmt_pct(params$soh_threshold, 0)` threshold and annual health-check extension for the bZ4X.
+- **Toyota Danmark**, battery guarantee — <https://www.toyota.dk/toyotas-drivlinjer/batterigaranti-tryghed>, retrieved 2 September 2026. Two covers: *"Fejl på batteriet"* 5 år / 100.000 km, and capacity at minimum `r fmt_pct(params$soh_threshold, 0)` for `r params$base_years` år / `r fmt_km(params$base_km)` km. Each EV health check adds *"1 år/15.000 km (hvad der kommer først)"* to both, *"helt indtil bilen fylder `r params$age_ceiling` år eller har kørt 1 mio km"*. Checks at an authorised Toyota workshop. *"Særlige regler gælder for Proace og Taxa."*
+- **Toyota Danmark**, warranty overview — <https://www.toyota.dk/toyota-ejere/om-toyota-service/derfor-toyota-service/toyota-garanti>, retrieved 2 September 2026. Factory warranty 3 år / 100.000 km. Toyota Relax extends 12 months per authorised service to a maximum of 10 years or 185.000 km. *"Alle standardgarantier overføres til en evt. ny ejer i hele garantiperioden."*
+- **Toyota Danmark**, Relax conditions — <https://www.toyota.dk/toyota-ejere/om-toyota-service/derfor-toyota-service/toyota-garanti/relax-betingelser>, retrieved 2 September 2026. Transferable to subsequent owners. A missed or overdue service does not forfeit future cover: *"diskvalificerer dette dig ikke til fremtidig dækning"*, with cover beginning again 30 days after the next completed service. This is the basis for the reinstatable lapse regime in section 3.3, though the wording is Relax's rather than the battery guarantee's.
+- **An authorised Subaru workshop in Denmark**, written service quote of 3 September 2026 for an e-Outback Business 5 Door Wagon AWD 280 kW Electric. The workshop is not named and the quote is not reproduced here: it was issued to an individual rather than published as a tariff, and the document itself carries vehicle identifiers. `r fmt_num(params$service_subaru_small_dkk, 2)` DKK incl. VAT at `r fmt_km(params$increment_km)` / 45,000 / 75,000 km (1, 3 and 5 years) and `r fmt_num(params$service_subaru_large_dkk, 2)` DKK at 30,000 / 60,000 km (2 and 4 years) — the same alternating pattern as Toyota. Quoted only to `r fmt_km(params$subaru_quoted_to_km)` km / 5 years.
+- **Toyota Køge**, service price calculator — <https://www.toyota-koege.dk/vaerksted/kalkulator>, retrieved 2 September 2026. Lille service `r fmt_dkk(params$service_toyota_small_dkk)` DKK at odd multiples of `r fmt_km(params$increment_km)` km; stort service `r fmt_dkk(params$service_toyota_large_dkk)` DKK at even multiples.
+- A Spanish source describes the base high-voltage battery warranty as 5 yr / 100,000 km. That is the defect cover, not the capacity guarantee (section 2.1).

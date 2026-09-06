@@ -1,0 +1,349 @@
+---
+title: "Bilsammenligning — vægtet pointmodel"
+subtitle: "Skalerer til vilkårligt mange biler"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+---
+
+```{css, echo=FALSE}
+/* wide tables (many cars) scroll horizontally instead of overflowing */
+.main-container { max-width: 1200px; }
+table.compare { display: block; overflow-x: auto; white-space: nowrap;
+                border-collapse: collapse; }
+table.compare th, table.compare td { padding: 4px 10px; border-bottom: 1px solid #ddd;
+                text-align: right; }
+table.compare th:first-child, table.compare td:first-child { text-align: left;
+                position: sticky; left: 0; background: #fff; font-weight: 600; }
+table.compare thead th { border-bottom: 2px solid #999; }
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.align = "center")
+# keep Danish characters (æ, ø, å) intact when rendering
+suppressWarnings(Sys.setlocale("LC_CTYPE", "en_US.UTF-8"))
+SPECS  <- "store_biler_specs.csv"
+VAEGTE <- "store_biler_vaegte.csv"
+FUELGROUP <- "el"   # værditab-opslag: "benzin" eller "el"
+
+# Danish number formatting; NA -> em dash
+fmt <- function(x) {
+  vapply(x, function(v) {
+    if (is.na(v)) return("&mdash;")
+    if (v == round(v)) formatC(v, format = "d", big.mark = ".")
+    else formatC(v, format = "f", digits = 1, big.mark = ".", decimal.mark = ",")
+  }, character(1))
+}
+# render a data.frame as a horizontally scrollable HTML table
+scroll_table <- function(df) {
+  knitr::kable(df, format = "html", row.names = FALSE,
+               table.attr = 'class="compare"', escape = FALSE)
+}
+```
+
+## Sådan virker modellen
+
+Det gamle værktøj gav point parvist (én bil +, én bil −) og kunne kun håndtere
+to biler. Denne model er **absolut og vægtet**, så den skalerer til vilkårligt
+mange biler — brede tabeller kan scrolles vandret.
+
+1. **Data** ligger i `r SPECS` — én række pr. parameter, én kolonne pr. bil.
+   Tilføj en bil = tilføj en kolonne; tilføj en parameter = tilføj en række.
+2. Hver parameter har en **`kategori`** (én af de 8 prioriteter, eller `info` =
+   vises men tæller ikke med) og en **`retning`** (`hoej` = højere er bedst,
+   `lav` = lavere er bedst). En parameter kan tilhøre flere kategorier adskilt
+   med `;`.
+3. **Normalisering pr. parameter (ratio-skala).** Den bedste bil får 1,0 og de
+   øvrige proportionalt: for `hoej` er score $x/\max(x)$, for `lav` er
+   $\min(x)/x$. Marginens størrelse bevares.
+4. **Robust over for huller.** Mangler en bil en værdi, springes den over for
+   netop den parameter; en parameter scorer, så længe mindst to biler har data.
+   Hver bils slutindeks normaliseres med vægten af de kategorier, bilen *har*
+   data for — så manglende felter hverken straffer eller belønner kunstigt.
+5. **Kategoriscore** = gennemsnit af parameter-scorerne i kategorien.
+   **Slutindeks** = vægtet gennemsnit (vægte i `r VAEGTE`), skaleret 0–100.
+
+```{r load}
+specs <- read.csv(SPECS, stringsAsFactors = FALSE, fileEncoding = "UTF-8",
+                  check.names = FALSE)
+w     <- read.csv(VAEGTE, stringsAsFactors = FALSE, fileEncoding = "UTF-8")
+
+meta <- c("parameter", "kategori", "retning", "enhed")
+cars <- setdiff(names(specs), meta)
+
+valmat <- sapply(cars, function(c) suppressWarnings(as.numeric(specs[[c]])))
+rownames(valmat) <- specs$parameter
+```
+
+```{r tco}
+# --- Totaløkonomi (TCO): fold fueltype-specifik værditab ind i økonomi ---
+# Værditab-rater fra depreciation_by_fueltype.csv (genereret af
+# depreciation_by_fueltype.R; analyze_depreciation.Rmd røres ikke).
+HOLD <- 4; KM_TOTAL <- 60000          # ejerperiode 4 år, 15.000 km/år
+BENZIN_KR_L <- 13.5; EL_KR_KWH <- 2.75
+dep <- read.csv("depreciation_by_fueltype.csv", stringsAsFactors = FALSE,
+                fileEncoding = "UTF-8")
+dep <- dep[dep$grp == FUELGROUP, ]
+maerke  <- as.character(unlist(specs[specs$parameter == "Maerke", cars]))
+deprate <- setNames(dep$dep_adj_shrunk_pct[match(maerke, dep$brand)], cars)  # %/år
+
+price_row <- intersect(c("Pris", "Basispris"), rownames(valmat))[1]
+vaerditab <- round(valmat[price_row, ] * (1 - (1 - deprate / 100)^HOLD))
+
+fuel_row <- intersect(c("Forbrug", "Energiforbrug"), rownames(valmat))[1]
+if (FUELGROUP == "benzin") {
+  drift <- round(KM_TOTAL / valmat[fuel_row, ] * BENZIN_KR_L)
+} else {
+  whkm  <- if (!is.na(fuel_row)) valmat[fuel_row, ]
+           else valmat["Batteri_kWh", ] * 1000 / valmat["Raekkevidde", ]
+  drift <- round(KM_TOTAL * whkm / 1000 * EL_KR_KWH)
+}
+if (!is.na(fuel_row)) specs$kategori[specs$parameter == fuel_row] <- "info"
+
+addrow <- function(name, kat, ret, enhed, vals) {
+  i <- nrow(specs) + 1; specs[i, ] <<- NA
+  specs$parameter[i] <<- name; specs$kategori[i] <<- kat
+  specs$retning[i]   <<- ret;  specs$enhed[i] <<- enhed
+  for (c in cars) specs[i, c] <<- as.character(vals[[c]])
+}
+addrow("Vaerditab_pct_aar", "info",     "lav", "pct", deprate)
+addrow("Vaerditab_4aar",    "oekonomi", "lav", "kr",  vaerditab)
+addrow("Drift_4aar",        "oekonomi", "lav", "kr",  drift)
+valmat <- sapply(cars, function(c) suppressWarnings(as.numeric(specs[[c]])))
+rownames(valmat) <- specs$parameter
+```
+
+## Specifikationer (rådata)
+
+Vandret scroll viser alle biler. `—` = ukendt/ikke udfyldt.
+
+```{r spectable, results='asis'}
+disp <- data.frame(Parameter = specs$parameter, Enhed = specs$enhed,
+                   check.names = FALSE, stringsAsFactors = FALSE)
+# numbers formatted; free text (e.g. "ubegrænset") shown as-is; blanks as dash
+cell <- function(s) {
+  if (is.na(s) || s == "NA" || s == "") return("&mdash;")
+  n <- suppressWarnings(as.numeric(s))
+  if (is.na(n)) return(s)
+  fmt(n)
+}
+for (c in cars) disp[[c]] <- vapply(as.character(specs[[c]]), cell, character(1))
+disp$Kategori <- specs$kategori
+scroll_table(disp)
+```
+
+```{r scoring}
+# ratio normalisation across cars that have a value; NA stays NA
+norm_row <- function(x, dir) {
+  ok <- !is.na(x)
+  out <- rep(NA_real_, length(x))
+  if (sum(ok) < 2) return(out)          # need >=2 cars to compare
+  if (dir == "hoej") { m <- max(x[ok]);  if (m == 0) return(out); out[ok] <- x[ok] / m }
+  else               { mn <- min(x[ok]); if (any(x[ok] == 0)) return(out); out[ok] <- mn / x[ok] }
+  out
+}
+
+scored <- which(specs$kategori != "info" & specs$retning %in% c("hoej", "lav"))
+scoremat <- t(vapply(scored,
+                     function(i) norm_row(valmat[i, ], specs$retning[i]),
+                     numeric(length(cars))))
+rownames(scoremat) <- specs$parameter[scored]
+colnames(scoremat) <- cars
+
+keeprow  <- rowSums(!is.na(scoremat)) >= 2
+scoremat <- scoremat[keeprow, , drop = FALSE]
+sc_kat   <- specs$kategori[scored][keeprow]
+dropped  <- specs$parameter[scored][!keeprow]
+
+# category score per car = mean of mapped parameter scores (NA-aware)
+cats   <- w$kategori
+catmat <- matrix(NA_real_, nrow = length(cats), ncol = length(cars),
+                 dimnames = list(cats, cars))
+for (k in seq_along(cats)) {
+  rows_k <- which(vapply(strsplit(sc_kat, ";"),
+                         function(v) cats[k] %in% trimws(v), logical(1)))
+  if (length(rows_k) == 0) next
+  catmat[k, ] <- apply(scoremat[rows_k, , drop = FALSE], 2,
+                       function(col) if (all(is.na(col))) NA_real_ else mean(col, na.rm = TRUE))
+}
+
+present <- which(rowSums(!is.na(catmat)) > 0)
+
+# per-car weighted index, renormalised by the weight of categories the car has
+index <- vapply(seq_along(cars), function(j) {
+  v <- catmat[present, j]; ww <- w$vaegt[present]; keep <- !is.na(v)
+  if (!any(keep)) return(NA_real_)
+  100 * sum(v[keep] * ww[keep]) / sum(ww[keep])
+}, numeric(1))
+names(index) <- cars
+```
+
+## Prioriteter og vægte
+
+```{r weights, results='asis'}
+wt <- w[order(w$prioritet), ]
+wt$bruges <- ifelse(wt$kategori %in% w$kategori[present], "ja", "&mdash;")
+wt <- data.frame(Prioritet = wt$prioritet, Kategori = wt$label,
+                 Vægt = wt$vaegt, `Har data` = wt$bruges, check.names = FALSE)
+scroll_table(wt)
+```
+
+`r if (length(dropped)) sprintf("Udeladt (under to biler har værdi): **%s**.", paste(dropped, collapse=", "))`
+
+## Kategoriscorer (0–100)
+
+Hvor godt hver bil klarer hver prioritet, før vægtning.
+
+```{r cattable, results='asis'}
+catpct <- catmat[present, , drop = FALSE]
+catdf  <- data.frame(Kategori = w$label[present], Vægt = w$vaegt[present],
+                     check.names = FALSE, stringsAsFactors = FALSE)
+for (c in cars) catdf[[c]] <- fmt(round(100 * catpct[, c]))
+scroll_table(catdf)
+```
+
+## Slutresultat
+
+```{r ranking, results='asis'}
+# data coverage: how many of the weighted categories each car is scored on
+daekning <- colSums(!is.na(catmat[present, , drop = FALSE]))
+# mark cars without Euro NCAP with a footnote symbol (same test as the footnote)
+ncap_vals <- suppressWarnings(as.numeric(as.character(
+  unlist(specs[specs$parameter == "NCAP_stjerner", cars]))))
+mark <- ifelse(is.na(ncap_vals), "<sup>†</sup>", "")
+rank_df <- data.frame(Bil = paste0(cars, mark), Indeks = index,
+                      Daekning = sprintf("%d/%d", daekning, length(present)),
+                      stringsAsFactors = FALSE)
+rank_df <- rank_df[order(-rank_df$Indeks), ]
+rank_df <- data.frame(Placering = seq_len(nrow(rank_df)), Bil = rank_df$Bil,
+                      Indeks = fmt(round(rank_df$Indeks, 1)),
+                      `Datadækning` = rank_df$Daekning, check.names = FALSE)
+scroll_table(rank_df)
+```
+
+*Datadækning* = antal vægtede kategorier bilen har data for. Lavere dækning betyder,
+at indekset hviler på færre prioriteter — biler uden NCAP-test mangler fx
+personsikkerhed (vægt 7) og ville typisk rykke op, når data tilføjes.
+
+```{r ncap-note, results='asis'}
+nostar <- cars[is.na(ncap_vals)]
+if (length(nostar))
+  cat(sprintf(paste0("† **Fodnote (Euro NCAP):** %s er endnu ikke Euro NCAP-",
+    "testede og scorer derfor *ikke* på personsikkerhed (prioritet 2, vægt 7). ",
+    "Da manglende data ikke straffes, løfter det dem mærkbart i indekset — ",
+    "de kan falde, når testresultater foreligger.\n"),
+    paste(gsub("_", " ", nostar), collapse = ", ")))
+```
+
+```{r barplot, fig.width=9, fig.height=6}
+o  <- order(index)
+op <- par(mar = c(4, 13, 2, 2))
+bp <- barplot(index[o], names.arg = cars[o], horiz = TRUE, las = 1,
+              col = "steelblue", xlim = c(0, 100), cex.names = 0.85,
+              xlab = "Vægtet indeks (0–100)", main = "Samlet bilsammenligning")
+text(index[o], bp, labels = round(index[o], 1), pos = 4, xpd = NA, cex = 0.8)
+par(op)
+```
+
+## Hvem vinder hver kategori
+
+```{r winners, results='asis'}
+winner <- apply(catmat[present, , drop = FALSE], 1, function(r)
+  if (all(is.na(r))) "&mdash;" else paste(cars[which(r == max(r, na.rm = TRUE))], collapse = ", "))
+win_df <- data.frame(Kategori = w$label[present], Vægt = w$vaegt[present],
+                     Vinder = winner, check.names = FALSE)
+scroll_table(win_df)
+```
+
+## Sådan opdaterer du
+
+- **Ny værdi:** ret tallet i `r SPECS` og knit igen.
+- **Ny bil:** tilføj en kolonne i `r SPECS` med bilens navn og værdier.
+- **Ny parameter:** tilføj en række; sæt `kategori` (eller `info`) og `retning`.
+- **Anden vægtning:** ret `vaegt` i `r VAEGTE`.
+
+Knit fra R: `rmarkdown::render("store_biler.Rmd")`.
+
+## Datagrundlag og forbehold
+
+**Kilder.** Tekniske specs (rækkevidde WLTP, batteri, DC-ladeeffekt, effekt,
+drivlinje, vægt, bagagerum, akselafstand, anhængertræk, længde) er hentet fra
+[EV-Database](https://ev-database.org). Priser og garanti er danske vejledende
+2026-tal fra importør-/forhandlersider og fagmedier (Volkswagen.dk, Volvo, MG,
+Hyundai.dk, Nissan.dk, MINI.dk, Citroën.dk, Suzuki.dk, Honda.dk, Mazda.dk,
+Renault.dk, Peugeot.dk, bilmagasinet.dk, FDM m.fl.).
+
+**Need-to-have krav (adgangsbillet, ikke point)** — samme tre som i
+`smaa_elbiler`. En bil skal opfylde *alle tre* for at komme i tabellen; de står
+som `info`-rækker, hvor alle biler har samme værdi:
+
+1. **Varmepumpe** — standard eller tilkøbelig
+2. **Forkonditionering af batteri**
+3. **5 døre**
+
+**Valgte varianter** (billigste, der opfylder alle tre krav, under 400.000 kr.):
+Suzuki e-Vitara 61 kWh 2WD · Citroën ë-C5 Aircross 73 kWh · **MG MGS5 EV Luxury
+64 kWh** · Peugeot e-3008 73 kWh · Hyundai Ioniq 5 84 kWh RWD · Nissan Ariya
+87 kWh 2WD · Renault Scénic E-Tech 220 LR · MINI Countryman E · **VW ID.4 Pro +
+varmepumpe** · **Subaru Uncharted Touring AWD** · Subaru E-Outback · Volvo EX40
+Single Motor ER Ultra Excess · Škoda Enyaq 85x Selection.
+
+**Ændringer ved opdateringen (august 2026):**
+
+| Ændring | Bil | Årsag |
+| :-- | :-- | :-- |
+| **Fjernet** | Honda e:Ny1 | Ingen varmepumpe — Honda har bevidst udeladt den |
+| **Fjernet** | Mazda MX-30 | El-versionen er **udgået** i DK; kun plug-in hybrid sælges nu |
+| **Tilføjet** | Subaru Uncharted Touring AWD | Ny Subaru-elbil, 349.900 kr. — AWD, 211 mm frihøjde og 1.500 kg træk, altså direkte sammenlignelig med E-Outback, men 20.000 kr. billigere |
+| **Dyrere variant** | MG MGS5 | Varmepumpe fås **kun** i Luxury 64 kWh → prisen går fra 199.999 til 269.999 kr. |
+| **Tillæg** | VW ID.4 Pro | Varmepumpe er tilvalg på den billigste variant → 339.995 + ca. 8.000 kr. |
+| **Prisfald** | Hyundai Ioniq 5 · Renault Scénic · Peugeot e-3008 · Nissan Ariya | Fx Scénic 374.990 → 299.990 kr. |
+
+**Kandidater der ikke er vurderet endnu:** Škoda Elroq, Kia EV3/EV5/EV6, Toyota
+bZ4X, Nissan Leaf, Ford Explorer/Capri og VW ID. Cross ligger alle i
+prisintervallet og bør tjekkes mod de tre krav i en senere runde.
+
+**Forbehold:**
+
+- **Økonomi = totaløkonomi (TCO)** med tre lige-vægtede lav-parametre:
+  basispris + 4-års værditab (kr) + 4-års energi (kr). Værditab =
+  `Pris × (1−(1−r)⁴)` med mærkets **el-specifikke, mileage-justerede** afskrivning
+  `r` fra `depreciation_by_fueltype.csv` (genereret af `depreciation_by_fueltype.R`;
+  `analyze_depreciation.Rmd` urørt), empirisk-Bayes-krympet efter standardfejl.
+  Energi = 60.000 km × Wh/km × 2,75 kr/kWh, hvor **Wh/km er afledt af
+  batteri ÷ rækkevidde** (ingen forbrugsrække her) — et estimat. Konstanter ændres
+  i `tco`-chunken. **Subaru og Suzuki** (for få brugte el-eksemplarer) samt **MG**
+  mangler værditab → `—`; bemærk at det *hjælper* dem, da de slipper for et
+  afskrivningstræk. EV-afskrivning er desuden mere usikker (kort brugtmarked).
+- **Ratio-skalaen** antager, at størrelsesforholdet er meningsfuldt (pris, mål,
+  effekt, garanti). En parameter scorer kun, når mindst to biler har værdi;
+  manglende felter (`—`) håndteres pr. bil (se *Datadækning*).
+- **Garanti** = den maksimale dækning *uden tilkøb*. Da serviceintervallerne
+  under alle omstændigheder overholdes, skelnes der ikke mellem service-aktiveret
+  og service-uafhængig garanti — samme princip som i små-bil-rapporterne, så
+  tallene er sammenlignelige på tværs. Bil-garanti: Subaru 10 år/200.000 km;
+  Stellantis (Citroën/Peugeot) og Honda 8 år/160.000 km (service-aktiveret);
+  VW/Volvo/Škoda/Hyundai/Renault 5 år på el; MG 7 år; Suzuki/Mazda 6 år; Nissan
+  3 år; MINI 2 år (forlængelse kun mod betaling). Batterigaranti typisk 8 år
+  (Subaru 10, MG 7). Garanti-km vises men scores ikke (flere har ubegrænset km).
+- **Personsikkerhed** scores på Euro NCAP-stjerner. Suzuki e-Vitara, Citroën ë-C5
+  Aircross, MG MGS5 og Subaru Uncharted er endnu ikke Euro NCAP-testede → `—`
+  (se fodnoten ved slutresultatet). NCAP-delscorer vises kun for E-Outback og Enyaq.
+- **Data der bør efterprøves hos forhandler/producent:** varmepumpen på **MINI
+  Countryman E** indgår i en tilvalgspakke, men prisen kunne ikke verificeres og
+  er *ikke* lagt oveni; **VW ID.4**s varmepumpe-tillæg (~8.000 kr.) er et estimat;
+  **Subaru Uncharted**s garanti er antaget identisk med E-Outbacks 10 år/200.000 km.
+  **Nissan Ariya** har forkonditionering, men **kun manuelt aktiveret** — den
+  forbereder ikke selv batteriet til hurtigladning i kulde.
+- **Frihøjde** kendes kun for de to Subaru'er og Enyaq; **dækside** kun for
+  E-Outback og Enyaq → kun de biler scores på fartbump.
+  **Forhandler i nærområdet** mangler for alle (udfyld km, så aktiveres
+  prioritet 7).
+- **Drivlinje:** kun Subaru E-Outback, Subaru Uncharted Touring og Škoda Enyaq 85x
+  er AWD i de valgte trim. Flere mærker (MINI SE ALL4, Nissan e-4ORCE, Suzuki
+  AllGrip) fås med AWD som dyrere variant.
+```

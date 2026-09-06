@@ -1,0 +1,483 @@
+---
+title: "Used-car depreciation by brand"
+subtitle: "From bilbasen.dk listings"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.align = "center")
+# keep Danish characters (ë, ø, å) intact when rendering
+suppressWarnings(Sys.setlocale("LC_CTYPE", "en_US.UTF-8"))
+CSV <- "bilbasen_data.csv"
+CUR_YEAR <- as.integer(format(Sys.Date(), "%Y"))
+```
+
+> **Data availability.** The input file `bilbasen_data.csv` — about 9,700 adverts —
+> is not distributed with this repository. Republishing it would be a substantial
+> re-utilisation of bilbasen.dk's database, protected under the EU database
+> directive (in Denmark, ophavsretsloven § 71). What is published is the derived
+> statistics, the ~100-row single-model extract used in section 5 with its
+> advert-pointer and seller-location columns removed, and this rendered note,
+> which is the record of what the full dataset showed when it was pulled. To
+> re-run the analysis, regenerate the input with `scrape_bilbasen.py` first.
+
+## What this does
+
+Estimates the **average annual depreciation** of different car brands from used-car
+listings scraped from [bilbasen.dk](https://www.bilbasen.dk). For each listing we
+use `kontantpris` (asking cash price) and the first-registration **month/year**,
+and define a continuous age in years
+
+$$\text{age} = \frac{\text{today} - \text{registration date}}{365.25},$$
+
+dating each car to the 15th of its registration month (mid-year for the ~0.4% of
+listings lacking a month).
+
+Two estimates are produced:
+
+- **(A) Statistical (primary).** Per brand we fit a log-price model
+  `lm(log(kontantpris) ~ age)`. The age coefficient $b$ implies a constant
+  *proportional* loss of $1 - e^{b}$ per extra year of age. A second model adds
+  `log(mileage)` to hold usage constant. This needs only price + year, which every
+  listing has.
+- **(B) Direct `nypris` check.** New price has no structured field on bilbasen and
+  appears only sporadically in free text, so it is used merely as a sparse
+  cross-check: $\text{dep} = 1 - (\text{kontantpris}/\text{nypris})^{1/\text{age}}$.
+
+## Load & clean
+
+```{r load}
+stopifnot(file.exists(CSV))
+d <- read.csv(CSV, stringsAsFactors = FALSE, fileEncoding = "UTF-8")
+
+# The CSV accumulates scrape snapshots (June + September 2026); a car listed in
+# both appears more than once. Keep the most recent listing per external_id.
+d <- d[order(d$external_id, d$scraped_at), ]
+d <- d[!duplicated(d$external_id, fromLast = TRUE), ]
+
+num <- function(x) suppressWarnings(as.numeric(x))
+d$kontantpris <- num(d$kontantpris)
+d$reg_year    <- num(d$reg_year)
+d$reg_month   <- num(d$reg_month)
+d$mileage_km  <- num(d$mileage_km)
+d$nypris      <- num(d$nypris)
+
+# Continuous age in years from the first-registration date (mid-month = day 15;
+# the ~0.4% of rows without a month fall back to mid-year). This puts the right
+# fraction of cars inside the first year, sharpening the first-year estimates.
+mo <- ifelse(is.na(d$reg_month) | d$reg_month < 1 | d$reg_month > 12, 7, d$reg_month)
+reg_date <- as.Date(sprintf("%04d-%02d-15", d$reg_year, mo))
+d$age     <- as.numeric(Sys.Date() - reg_date) / 365.25
+d$age     <- pmax(d$age, 1 / 365)        # floor brand-new cars at ~1 day, not 0
+d$age_eff <- d$age                        # already strictly positive
+
+# keep genuine retail cars with sane values; drop scrap/project noise
+keep <- with(d,
+  !is.na(kontantpris) & kontantpris >= 10000 & kontantpris <= 5e6 &
+  !is.na(reg_year) & reg_year >= 1990 & reg_year <= CUR_YEAR &
+  !is.na(age) & age <= 30 &
+  (is.na(price_type) | price_type == "Retail"))
+d <- d[keep, ]
+
+# group on canonical make, fall back to slug
+d$brand <- ifelse(is.na(d$make) | d$make == "", d$brand_slug, d$make)
+```
+
+```{r overview}
+cat(sprintf("%d usable listings across %d brands.\n",
+            nrow(d), length(unique(d$brand))))
+knitr::kable(as.data.frame(table(Brand = d$brand)), col.names = c("Brand", "n"))
+```
+
+```{r helpers, include=FALSE}
+# Heteroscedasticity-consistent (HC3) standard errors + CIs — base R, no packages.
+robust_se <- function(m, type = "HC3") {
+  X <- model.matrix(m); e <- resid(m)
+  h <- pmin(hatvalues(m), 1 - 1e-8)
+  n <- nrow(X); k <- ncol(X)
+  w <- switch(type, HC0 = e^2, HC1 = e^2 * n / (n - k), e^2 / (1 - h)^2)  # default HC3
+  bread <- solve(crossprod(X))
+  V <- bread %*% crossprod(X, X * w) %*% bread
+  setNames(sqrt(diag(V)), colnames(X))
+}
+robust_ci <- function(m, term, type = "HC3", level = 0.95) {
+  est <- coef(m)[[term]]; se <- robust_se(m, type)[[term]]
+  z <- qnorm(1 - (1 - level) / 2)
+  c(est - z * se, est + z * se)
+}
+# turn a log-scale slope CI [lo, hi] into a depreciation-% CI (1 - e^b decreasing)
+dep_ci <- function(lo, hi) c(100 * (1 - exp(hi)), 100 * (1 - exp(lo)))
+```
+
+## (A) Statistical annual depreciation
+
+For every brand with enough data we fit the log-price model and translate the age
+coefficient into a yearly depreciation percentage.
+
+```{r modelA}
+MIN_N  <- 15   # min sample to fit a brand
+brands <- sort(unique(d$brand))
+rows   <- list()
+models <- list()   # keep each brand's age-only fit for the diagnostics appendix
+
+for (b in brands) {
+  sub <- d[d$brand == b, ]
+  if (nrow(sub) < MIN_N || length(unique(sub$age)) < 3) next
+
+  m1       <- lm(log(kontantpris) ~ age, data = sub)
+  dep_rate <- 1 - exp(coef(m1)[["age"]])          # fraction lost per year
+  models[[b]] <- m1
+
+  # control for mileage where available
+  sub2 <- sub[!is.na(sub$mileage_km) & sub$mileage_km > 0, ]
+  dep_rate_adj <- NA_real_
+  if (nrow(sub2) >= MIN_N && length(unique(sub2$age)) >= 3) {
+    m2 <- lm(log(kontantpris) ~ age + log(mileage_km), data = sub2)
+    dep_rate_adj <- 1 - exp(coef(m2)[["age"]])
+  }
+
+  rows[[b]] <- data.frame(
+    brand          = b,
+    n              = nrow(sub),
+    median_price   = round(median(sub$kontantpris)),
+    median_age     = round(median(sub$age), 1),
+    dep_pct_yr     = round(100 * dep_rate, 1),
+    dep_pct_yr_adj = round(100 * dep_rate_adj, 1),
+    r2             = round(summary(m1)$r.squared, 2),
+    stringsAsFactors = FALSE)
+}
+
+res <- do.call(rbind, rows)
+res <- res[order(res$dep_pct_yr), ]
+rownames(res) <- NULL
+write.csv(res, "depreciation_by_brand.csv", row.names = FALSE)
+```
+
+**`dep_pct_yr`** = % of value lost per year of age (log-price model);
+**`dep_pct_yr_adj`** = same, holding mileage constant.
+
+```{r tableA}
+knitr::kable(res, caption = "Annual depreciation by brand (slowest first)")
+```
+
+```{r barA, fig.width=9, fig.height=6}
+op <- par(mar = c(4, 7, 2, 1))
+o  <- order(res$dep_pct_yr)
+barplot(res$dep_pct_yr[o], names.arg = res$brand[o], horiz = TRUE, las = 1,
+        col = "steelblue", xlab = "% depreciation per year",
+        main = "Annual depreciation by brand")
+par(op)
+```
+
+## (B) Direct nypris cross-check
+
+```{r modelB}
+dn <- d[!is.na(d$nypris) & d$nypris > d$kontantpris & d$age >= 1, ]
+cat(sprintf("%d of %d listings (%.1f%%) quote a usable nypris.\n",
+            nrow(dn), nrow(d), 100 * nrow(dn) / max(nrow(d), 1)))
+
+if (nrow(dn) >= 10) {
+  dn$dep_direct <- 1 - (dn$kontantpris / dn$nypris)^(1 / dn$age_eff)
+  agg <- aggregate(dep_direct ~ brand, dn, function(x) round(100 * median(x), 1))
+  cnt <- aggregate(dep_direct ~ brand, dn, length)
+  agg <- merge(agg, cnt, by = "brand", suffixes = c("_pct_yr", "_n"))
+  names(agg) <- c("brand", "dep_pct_yr_direct", "n")
+  knitr::kable(agg[order(agg$dep_pct_yr_direct), ], row.names = FALSE,
+               caption = "Direct nypris-based depreciation (cross-check)")
+} else {
+  cat("Too few nypris values for a per-brand direct estimate (expected).\n")
+}
+```
+
+## (C) First-year cliff vs. ongoing annual rate
+
+The appendix `p_curv` test rejects a single constant rate for most brands:
+depreciation is steeper early and flatter later. We relax the straight line with a
+two-segment ("broken-stick") log model, knot at age 1:
+
+$$\log(\text{price}) = a + \beta_1\,\underbrace{\min(\text{age},1)}_{\text{first year}}
+  + \beta_2\,\underbrace{\max(\text{age}-1,0)}_{\text{later years}}.$$
+
+So $1-e^{\beta_1}$ is the **first-year** drop and $1-e^{\beta_2}$ the **ongoing**
+annual rate thereafter. CIs below are **HC3 heteroscedasticity-robust** (the
+appendix showed plain OLS SEs are unsafe here).
+
+```{r modelC}
+sp <- do.call(rbind, lapply(res$brand, function(b) {
+  s <- d[d$brand == b, ]
+  s$seg1 <- pmin(s$age, 1); s$seg2 <- pmax(s$age - 1, 0)
+  base <- data.frame(brand = b, n = nrow(s), n_lt1y = sum(s$age < 1),
+                     first_yr_pct = NA_real_, first_yr_ci = "—",
+                     ongoing_pct  = res$dep_pct_yr[res$brand == b],
+                     ongoing_ci   = "(see A)", stringsAsFactors = FALSE)
+  if (length(unique(s$seg1)) < 2 || length(unique(s$seg2)) < 2) return(base)
+  m  <- lm(log(kontantpris) ~ seg1 + seg2, data = s)
+  r1 <- robust_ci(m, "seg1"); r2 <- robust_ci(m, "seg2")
+  c1 <- dep_ci(r1[1], r1[2]); c2 <- dep_ci(r2[1], r2[2])
+  base$first_yr_pct <- round(100 * (1 - exp(coef(m)[["seg1"]])), 1)
+  base$first_yr_ci  <- sprintf("[%.1f, %.1f]", c1[1], c1[2])
+  base$ongoing_pct  <- round(100 * (1 - exp(coef(m)[["seg2"]])), 1)
+  base$ongoing_ci   <- sprintf("[%.1f, %.1f]", c2[1], c2[2])
+  base
+}))
+sp <- sp[order(sp$ongoing_pct), ]
+knitr::kable(sp, row.names = FALSE,
+  caption = "First-year drop vs. ongoing annual rate (HC3-robust 95% CIs)")
+```
+
+```{r dumbbell, fig.width=9, fig.height=7}
+sp2 <- sp[!is.na(sp$first_yr_pct), ]
+sp2 <- sp2[order(sp2$ongoing_pct), ]
+y   <- seq_len(nrow(sp2))
+op  <- par(mar = c(4, 7, 3, 1))
+plot(range(c(sp2$first_yr_pct, sp2$ongoing_pct)), c(1, nrow(sp2)), type = "n",
+     yaxt = "n", xlab = "% depreciation", ylab = "",
+     main = "First-year drop (red) vs. ongoing annual rate (blue)")
+abline(v = 0, col = "grey85", lty = 3)
+segments(sp2$ongoing_pct, y, sp2$first_yr_pct, y, col = "grey70")
+points(sp2$ongoing_pct, y, pch = 16, col = "steelblue")
+points(sp2$first_yr_pct, y, pch = 16, col = "firebrick")
+axis(2, y, sp2$brand, las = 1, cex.axis = 0.8)
+par(op)
+```
+
+Reading this:
+
+- **First-year > ongoing** for most brands is the cliff the diagnostics predicted.
+- **`n_lt1y`** is the count of cars under one year old driving the first-year
+  estimate; when it is small the first-year figure has a wide CI — don't over-read.
+- **Important scope caveat:** even an "age-0" listing is already a *used* car, so
+  this first-year drop is measured *within the used market*. The genuine
+  off-the-lot cliff (nypris → first resale) happens before age 0 and is **not**
+  captured here — treat `first_yr_pct` as "first observed year on the used market,"
+  not the full new-car hit.
+
+## Price-vs-age curves
+
+Each panel: individual listings (points) with the fitted log-price curve (red).
+
+```{r curves, fig.width=11, fig.height=9}
+op <- par(mfrow = c(4, 5), mar = c(3.2, 3.2, 2, 0.6), mgp = c(1.9, 0.6, 0))
+for (b in res$brand) {
+  sub <- d[d$brand == b, ]
+  plot(jitter(sub$age), sub$kontantpris / 1000, pch = 16, cex = 0.4,
+       col = rgb(0, 0, 0, 0.3), xlab = "age (yrs)", ylab = "price (1000 kr)",
+       main = sprintf("%s (%.1f%%/yr)", b, res$dep_pct_yr[res$brand == b]))
+  ag <- seq(0, max(sub$age, na.rm = TRUE), length.out = 50)
+  m1 <- lm(log(kontantpris) ~ age, data = sub)
+  lines(ag, exp(predict(m1, data.frame(age = ag))) / 1000,
+        col = "firebrick", lwd = 2)
+}
+par(op)
+```
+
+## (D) Case study: the same car, two badges — Solterra vs bZ4X
+
+The **Subaru Solterra** and **Toyota bZ4X** are the jointly developed
+Toyota–Subaru battery-EV twins: the same platform, factory and drivetrain, sold
+under two brands. That makes them a natural controlled experiment — if
+depreciation is driven by the car, they should shed value at the same rate; if
+brand perception matters, they should diverge.
+
+Data are **all** current bilbasen listings for each model, pulled separately from
+the brand-level dataset by `scrape_models.py` into `solterra_bz4x_data.csv`. Two
+notes on scope:
+
+- The **bZ4X Touring** — the larger European wagon/SUV variant introduced in 2026
+  — is a *distinct model* on bilbasen (its own slug `bz4x_touring`, 12 used
+  listings). Our pull uses the `bz4x` slug, which returns only the standard model
+  (zero Touring cars), so the Touring is excluded by construction, as requested.
+- "Touring" *does* appear in the Solterra rows — but there it is a Subaru **trim**
+  name (`71 Touring`), not the Toyota variant — so all Solterra listings are kept.
+
+```{r modelD}
+sb <- read.csv("solterra_bz4x_data.csv", stringsAsFactors = FALSE,
+               fileEncoding = "UTF-8")
+sb$kontantpris <- num(sb$kontantpris)
+sb$reg_year    <- num(sb$reg_year)
+sb$reg_month   <- num(sb$reg_month)
+mo2 <- ifelse(is.na(sb$reg_month) | sb$reg_month < 1 | sb$reg_month > 12, 7,
+              sb$reg_month)
+sb$age <- pmax(as.numeric(Sys.Date() -
+               as.Date(sprintf("%04d-%02d-15", sb$reg_year, mo2))) / 365.25, 1/365)
+sb$model2 <- ifelse(sb$query == "subaru-solterra", "Solterra", "bZ4X")
+sb <- sb[!is.na(sb$kontantpris) & sb$kontantpris >= 1e4 &
+         !is.na(sb$age) & sb$age <= 30, ]
+
+tab <- do.call(rbind, lapply(c("Solterra", "bZ4X"), function(mm) {
+  s <- sb[sb$model2 == mm, ]
+  m <- lm(log(kontantpris) ~ age, data = s)
+  ci <- dep_ci(robust_ci(m, "age")[1], robust_ci(m, "age")[2])
+  data.frame(model = mm, n = nrow(s),
+             median_price = round(median(s$kontantpris)),
+             age_range = sprintf("%.1f–%.1f", min(s$age), max(s$age)),
+             dep_pct_yr = round(100 * (1 - exp(coef(m)[["age"]])), 1),
+             dep_ci = sprintf("[%.1f, %.1f]", ci[1], ci[2]),
+             r2 = round(summary(m)$r.squared, 2), stringsAsFactors = FALSE)
+}))
+knitr::kable(tab, row.names = FALSE,
+  caption = "Solterra vs bZ4X: annual depreciation (HC3-robust 95% CIs)")
+```
+
+To test the difference directly, pool both models and interact brand with age
+(Solterra is the baseline): the `model2bZ4X` term is the price-*level* gap and the
+`age:model2bZ4X` term is the difference in *depreciation slope*.
+
+```{r modelD-test}
+pooled <- lm(log(kontantpris) ~ age * model2, data = sb)
+knitr::kable(round(summary(pooled)$coefficients, 4),
+  caption = "Pooled model: log(kontantpris) ~ age * model (Solterra = baseline)")
+```
+
+```{r modelD-plot, fig.width=8, fig.height=5.5}
+cols <- c(Solterra = "firebrick", "bZ4X" = "steelblue")
+plot(sb$age, sb$kontantpris / 1000, pch = 16, cex = 0.9, col = cols[sb$model2],
+     xlab = "age (years)", ylab = "kontantpris (1000 kr)",
+     main = "Solterra vs bZ4X — price vs age")
+for (mm in c("Solterra", "bZ4X")) {
+  s  <- sb[sb$model2 == mm, ]; m <- lm(log(kontantpris) ~ age, data = s)
+  ag <- seq(min(s$age), max(s$age), length.out = 50)
+  lines(ag, exp(predict(m, data.frame(age = ag))) / 1000, col = cols[mm], lwd = 2)
+}
+legend("topright", legend = c("Solterra", "bZ4X"), col = cols,
+       pch = 16, lwd = 2, bty = "n")
+```
+
+**Verdict.** The two badges depreciate at **statistically indistinguishable
+rates** (~9–11%/yr, heavily overlapping CIs). In the pooled model neither the
+price-level term (`model2bZ4X`) nor the slope-difference term (`age:model2bZ4X`)
+comes close to significance — brand moves neither the price nor the depreciation
+rate once age is accounted for. For mechanically identical cars, that is the
+reassuring result.
+
+*Caveats specific to this comparison:* small samples (Solterra ~25, bZ4X ~78) and
+**very different age spreads** — the bZ4X fleet skews almost new (many 2026 cars),
+the Solterra spans one-to-three years — so each single-rate slope leans on a
+different age window. As everywhere here these are **asking** prices, and an EV
+launched in 2022 has only a few years of resale history, so treat the levels as
+indicative rather than precise.
+
+## Caveats
+
+- **Cross-sectional, not longitudinal**: different cars of different ages at one
+  point in time, not the same car aging. Brand model-mix shifts (e.g. more EVs
+  recently) partly confound the age signal.
+- "modelår" here = **first-registration date** (month/year from bilbasen), used as
+  a continuous age. Registration day is unknown, so we assume mid-month.
+- **Asking** prices, not transaction prices; dealer stock skews newer.
+- Low-price / very old outliers are filtered above to stabilise the log fit.
+- **Two scrape snapshots merged.** Listings come from a June and a September 2026
+  scrape; cars present in both are de-duplicated to their most recent listing, but
+  asking prices still span ~3 months of vintage. Negligible for the slopes, which
+  depend on registration date rather than scrape date.
+
+## Appendix: regression diagnostics
+
+These diagnostics all refer to the **primary** age-only model
+`lm(log(kontantpris) ~ age)` reported in section (A) — one fit per brand. They
+quantify the uncertainty behind each headline rate and test the assumptions
+behind the log-linear form. (Base R only.)
+
+### Diagnostics table
+
+```{r diag-table}
+diag <- do.call(rbind, lapply(names(models), function(b) {
+  m  <- models[[b]]
+  s  <- summary(m)
+  bcoef <- coef(m)[["age"]]
+  ci    <- confint(m, "age")                  # OLS 95% CI for slope b
+  rci   <- robust_ci(m, "age")                # HC3-robust 95% CI for slope b
+  # depreciation rate = 1 - e^b is decreasing in b -> swap CI ends
+  dep    <- 100 * (1 - exp(bcoef))
+  dep_lo <- 100 * (1 - exp(ci[2]))
+  dep_hi <- 100 * (1 - exp(ci[1]))
+  # functional form / curvature: significance of an added age^2 term
+  mf <- model.frame(m); y <- mf[[1]]; agev <- mf[["age"]]
+  p_curv <- tryCatch(
+    summary(lm(y ~ agev + I(agev^2)))$coefficients["I(agev^2)", "Pr(>|t|)"],
+    error = function(e) NA_real_)
+  # Breusch-Pagan heteroscedasticity (manual LM = n * R^2 ~ chisq_1)
+  bp   <- summary(lm(I(resid(m)^2) ~ fitted(m)))
+  p_bp <- pchisq(length(resid(m)) * bp$r.squared, df = 1, lower.tail = FALSE)
+  # residual normality
+  p_norm <- tryCatch(shapiro.test(resid(m))$p.value, error = function(e) NA_real_)
+  data.frame(
+    brand      = b,
+    n          = nrow(mf),
+    dep_pct_yr = round(dep, 1),
+    ci95       = sprintf("[%.1f, %.1f]", dep_lo, dep_hi),
+    ci95_rob   = sprintf("[%.1f, %.1f]", dep_ci(rci[1], rci[2])[1],
+                                         dep_ci(rci[1], rci[2])[2]),
+    adj_r2     = round(s$adj.r.squared, 2),
+    resid_se   = round(s$sigma, 3),
+    p_curv     = signif(p_curv, 2),
+    p_hetero   = signif(p_bp, 2),
+    p_norm     = signif(p_norm, 2),
+    stringsAsFactors = FALSE)
+}))
+diag <- diag[order(diag$dep_pct_yr), ]
+knitr::kable(diag, row.names = FALSE,
+  caption = "Per-brand diagnostics for the model log(kontantpris) ~ age")
+```
+
+How to read the columns:
+
+- **`ci95` / `ci95_rob`** — 95% confidence interval on the annual depreciation %,
+  from OLS and from HC3 heteroscedasticity-robust SEs respectively. Where they
+  diverge, trust `ci95_rob` (most brands fail the `p_hetero` test below). Note
+  these intervals are mostly *tight* even when `adj_r2` is low: with n≈290 the
+  average slope is well-pinned; low r² just means age explains little of the
+  within-brand price scatter (trim/spec/mileage do), not that the rate is fuzzy.
+- **`adj_r2` / `resid_se`** — fit quality. `resid_se` is in log units, i.e. the
+  typical *proportional* price scatter around the line (≈0.30 means ±30%).
+- **`p_curv`** — p-value of an added `age²` term. Small values reject the constant
+  %/yr (straight log line) assumption: real depreciation bends — the first-year
+  cliff then a flatter tail — so the single rate is a curvature-averaged summary.
+- **`p_hetero`** — Breusch–Pagan. Small values mean residual variance still
+  depends on the price level even in logs, so the OLS standard errors (and the CI)
+  are approximate and would tighten/widen under heteroscedasticity-robust SEs.
+- **`p_norm`** — Shapiro–Wilk on residuals. Small values mean non-normal residuals
+  (usually heavy tails / a few underpriced project cars). Slopes stay unbiased;
+  only the exact CI/p-values are affected.
+
+### Residuals vs fitted (one panel per brand)
+
+Look for structure: a curved red lowess line signals the functional-form issue
+flagged by `p_curv`; a fanning point cloud signals the heteroscedasticity flagged
+by `p_hetero`. A flat line through a constant-width band is what we want.
+
+```{r diag-resid, fig.width=12, fig.height=12}
+op <- par(mfrow = c(5, 5), mar = c(3, 3, 2, 0.6), mgp = c(1.8, 0.6, 0))
+for (b in diag$brand) {
+  m <- models[[b]]
+  plot(fitted(m), resid(m), pch = 16, cex = 0.4, col = rgb(0, 0, 0, 0.3),
+       xlab = "fitted log(price)", ylab = "residual", main = b)
+  abline(h = 0, col = "grey60")
+  lines(lowess(fitted(m), resid(m)), col = "firebrick", lwd = 2)
+}
+par(op)
+```
+
+### Normal Q-Q (one panel per brand)
+
+Points on the red line ⇒ normal residuals; S-shapes / departures at the ends ⇒
+heavy tails (the `p_norm` flag).
+
+```{r diag-qq, fig.width=12, fig.height=12}
+op <- par(mfrow = c(5, 5), mar = c(3, 3, 2, 0.6), mgp = c(1.8, 0.6, 0))
+for (b in diag$brand) {
+  r <- resid(models[[b]])
+  qqnorm(r, pch = 16, cex = 0.4, col = rgb(0, 0, 0, 0.3), main = b,
+         xlab = "theoretical", ylab = "residual")
+  qqline(r, col = "firebrick", lwd = 2)
+}
+par(op)
+```

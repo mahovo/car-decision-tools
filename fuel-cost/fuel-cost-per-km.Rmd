@@ -1,0 +1,2305 @@
+---
+title: "Cost per kilometre by fuel source"
+subtitle: "Electric, petrol, diesel and plug-in hybrid in Denmark, 2026 - and the point at which the cheapest kilometre stops being the cheapest car"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    toc_depth: 3
+params:
+  # ==========================================================================
+  # ENERGY PRICES. Every vector is [low, central, high] and is a genuinely
+  # credible range over the HOLDING PERIOD, not an error bar on today's price.
+  # All figures are DKK including VAT.
+  #
+  # This distinction was got wrong in the first version of this note and is
+  # worth being explicit about. There are two quite different dispersions:
+  #
+  #   STATION SPREAD    where you fill up, about +/- 0.80 DKK/l on any given
+  #                     day. Cross-sectional, small, and not the risk that
+  #                     matters over eight years.
+  #   PRICE LEVEL       where the whole market goes over the holding period.
+  #                     Historically several kroner. This is the real range.
+  #
+  # The vectors below are the SECOND of these. Section 2.4 sets out the
+  # history they are drawn from.
+  # ==========================================================================
+
+  # PUMP PRICES. The central values are SOURCED list prices for early
+  # September 2026, held flat - itself an assumption, not a forecast.
+  # https://benzinpriseridag.dk/priser  and  https://benzinsignal.dk/tendenser
+  #
+  # Prices are at or near record highs right now, so the range is deliberately
+  # asymmetric downwards. LOW is a return to the 2024-25 level, which is where
+  # both fuels sat as recently as eighteen months ago; it is not a crash
+  # scenario. HIGH is a 2022-style supply shock arriving on top of the known
+  # duty trajectory - road transport enters EU ETS2 in 2027, expected to add
+  # more than a krone a litre to both.
+  #
+  # Diesel's band is wider at both ends: it fell further in 2024-25 and its
+  # CO2 duty is on a steeper path, having already overtaken petrol's.
+  petrol_dkk_l: [13.50, 17.91, 23.00]
+  diesel_dkk_l: [13.00, 18.41, 24.00]
+  station_spread_dkk_l: 0.80
+  pump_prices_sourced: TRUE
+
+  # ELECTRICITY, DKK per kWh delivered at the meter or the charge point.
+  #
+  # 2026 is an unusual year and the reason this note is worth writing now: the
+  # elafgift was cut to the EU minimum of 0.8 oere/kWh (1 oere incl. VAT) for
+  # 2026-2027, down from 90 oere in 2025. Home charging is therefore roughly a
+  # krone per kWh cheaper than it was last year, and the whole comparison moves
+  # with it. That cut is TEMPORARY and legislated to expire after 2027 -
+  # section 9.3 shows what happens when it does.
+  # https://skat.dk/erhverv/afgifter-paa-varer-og-ydelser-punktafgifter/nyhedsbrev-afgifter/midlertidig-nedsaettelse-af-elafgiften-i-2026-og-2027
+  #
+  # Household all-in prices: elberegner.dk reports 1.82 DKK/kWh in January 2026
+  # and 1.66 in June for a 4,000 kWh household, tariffs and VAT included.
+  # https://elberegner.dk/guides/kwh-pris/
+  # Night charging on a variable tariff with a time-differentiated net tariff
+  # sits well below that.
+  #
+  # These bands are widened on the same eight-year logic as the pump prices,
+  # and it would be a straightforwardly biased comparison to widen one and not
+  # the other. Electricity is if anything the more volatile of the two: the
+  # household all-in price ran 1.57 DKK/kWh in 2020 and 3.17 in 2022, a factor
+  # of two, and the top of each band below is a 2022-style repeat.
+  #
+  # TAX IS HELD AT 2026 RATES INSIDE THESE BANDS. The elafgift cut expiring
+  # after 2027 is a separate, known, one-directional event and is modelled on
+  # its own in section 9.3; folding it in here would double-count it.
+  el_home_night: [0.75, 1.15, 2.30]
+  el_home_avg: [1.40, 1.75, 3.20]
+  # Public destination AC, and DC fast charging with and without a subscription.
+  # Clever One 3.75, Spirii ~3.60, Ionity ~3.96 with subscription; 5.40-7.50
+  # ad hoc on a payment card. Public tariffs pass wholesale moves through more
+  # slowly than a household variable tariff, so their bands are proportionally
+  # narrower rather than equally wide.
+  # https://ladetjek.dk/guides/offentlig-opladning-elbil-danmark
+  el_public_ac: [2.30, 2.95, 4.50]
+  el_dc_sub: [3.20, 3.80, 5.50]
+  el_dc_adhoc: [4.60, 5.80, 8.50]
+  el_prices_sourced: TRUE
+
+  # ==========================================================================
+  # FROM THE LABORATORY TO THE ROAD. WLTP is a cycle, not a forecast. These
+  # multipliers carry the type-approval figure to a full Danish year including
+  # winter. UNSOURCED judgement - see section 3.
+  #
+  # The BEV gap is the wider of the two because cabin heating comes out of the
+  # same battery, and because a Danish January is a large share of the year.
+  # The WLTP electric figure is already measured at the plug, so charging
+  # losses are NOT to be added again; el_extra_loss exists only for losses
+  # beyond that and defaults to zero.
+  # ==========================================================================
+  gap_ice: [1.10, 1.20, 1.32]
+  gap_ev: [1.12, 1.25, 1.42]
+  el_extra_loss: 0.0
+
+  # ==========================================================================
+  # NON-ENERGY MARGINAL COSTS
+  # ==========================================================================
+
+  # Tyres. A set of four, fitted, for a 1,500 kg reference car, and how far it
+  # lasts. Both scale with kerb weight: heavier cars need bigger and more
+  # load-rated tyres AND wear them faster. The exponents are judgement.
+  tyre_set_dkk: 5200
+  tyre_life_km: 45000
+  tyre_kerb_ref: 1500
+  tyre_price_exp: 0.55
+  tyre_wear_exp: 1.10
+
+  # Consumables and wear beyond the scheduled service, DKK/km, by powertrain:
+  # oil top-ups, brake pads and discs, spark or glow plugs, exhaust, EGR and
+  # DPF. An EV regenerates most of its braking and has no oil, which is most of
+  # the gap. UNSOURCED judgement - see section 5.3.
+  consum_el: 0.02
+  consum_benzin: 0.09
+  consum_diesel: 0.13
+  consum_phev: 0.10
+  # AdBlue on cars that use it: ~1.5 l per 1,000 km at ~13 DKK/l.
+  adblue_dkk_km: 0.02
+
+  # Repair hazard. Beyond hazard_free_km the expected unscheduled repair bill
+  # ramps linearly, at hazard_slope DKK/km for every 100,000 km past the
+  # threshold, times a powertrain multiplier. This is the weakest number in the
+  # note and it decides whether cheap old cars are actually cheap, so section
+  # 5.5 inverts it instead of defending it.
+  hazard_free_km: 100000
+  hazard_slope: 0.25
+  hazard_slope_sensitivity: [0.10, 0.25, 0.45]
+  hazard_mult_el: 0.5
+  hazard_mult_benzin: 1.0
+  hazard_mult_diesel: 1.5
+  hazard_mult_phev: 1.4
+
+  # Odometer depreciation. The elasticities come from mileage_elasticity.R,
+  # fitted on this repository's own bilbasen scrape; this multiplier scales all
+  # three at once for the sensitivity in section 9.2. A plug-in hybrid is
+  # priced off the petrol group, which is an assumption, not an estimate.
+  e_km_scale: 1.0
+  e_km_scale_sensitivity: [0.5, 1.0, 1.5]
+  dep_m_floor: 30000
+
+  # ==========================================================================
+  # PERIODISKE AFGIFTER
+  # ==========================================================================
+  # Rate tables live in periodic-tax-rates.csv. Two regimes, split by first
+  # registration date: CO2-ejerafgift from 1 July 2021, groen ejerafgift on
+  # km/l before it. This cutoff is expressed as a whole year because the CSV
+  # records the registration year only; a 2021 car registered in, say, August
+  # belongs in the CO2 regime and needs ejerafgift_override set by hand.
+  co2_regime_from_year: 2022
+  # The diesel udligningsafgift is temporarily cut by 30 % for 2025-26 and by
+  # 21 % from 2027, offsetting a 52 oere/l rise in the diesel duty. The table
+  # holds the as-published 2026 figures, so this multiplier is 1 today; 2027
+  # is worth about 1.13. See section 6.3.
+  udligning_factor: 1.0
+  udligning_sensitivity: [1.0, 1.13]
+
+  # ==========================================================================
+  # FIXED COSTS - only used in section 8, where the ranking actually changes
+  # ==========================================================================
+  # Real after-tax opportunity cost of the capital tied up in the car. The
+  # leasing note derives ~1.6 % risk-free and ~5.1 % risky after Danish capital
+  # taxes; 3 % real is a middle course. See leasing_vs_kontant.Rmd.
+  capital_rate: 0.03
+  capital_rate_sensitivity: [0.016, 0.030, 0.051]
+  # The one-off drop a car takes by ceasing to be new, over and above the
+  # used-market age slope. Calibrated in the leasing note (20 % total first
+  # year against a ~8 % used-market slope), not re-estimated here.
+  new_premium_loss: 0.12
+
+  # ==========================================================================
+  # THE READER'S OWN SITUATION - set these before knitting
+  # ==========================================================================
+  my_km_aar: 20000
+  my_years: 8
+  # Which charging profile applies to you. Must name a row of the profile table
+  # defined in the `profiles` chunk; knitting fails loudly if it does not.
+  my_profile: "House, night charging"
+
+  # ==========================================================================
+  # PRESENTATION
+  # ==========================================================================
+  km_grid: [8000, 12000, 15000, 20000, 25000, 30000, 40000]
+  ref_ev: bz4x_awd
+  # The RAV4 Hybrid is the most efficient AWD petrol car in the fleet, so using
+  # it as the petrol reference is the conservative choice: every comparison
+  # against it flatters the electric car least.
+  ref_petrol: rav4_hev_awd
+  ref_diesel: octavia_tdi_4x4
+  # Every car must be all-wheel drive, matching the reference car. Enforced in
+  # the validate chunk so a two-wheel-drive comparator cannot creep back in.
+  require_awd: TRUE
+  price_cap_dkk: 370000
+  # Odometer levels for the matched-mileage comparison in section 7, where the
+  # point is that the odometer is CONTROLLED rather than chosen.
+  odo_grid: [0, 50000, 100000, 150000, 200000, 250000]
+  odo_table: [0, 100000, 200000]
+  # Panels for the break-even cash price in section 8.
+  price_panel_odo: [0, 100000, 200000]
+---
+
+```{css, echo=FALSE}
+.main-container { max-width: 1100px; }
+table { border-collapse: collapse; margin: 1em 0; }
+table th, table td { padding: 4px 12px; border-bottom: 1px solid #ddd;
+                     text-align: right; }
+table th:first-child, table td:first-child { text-align: left; font-weight: 600; }
+table thead th { border-bottom: 2px solid #999; text-align: right; }
+blockquote { font-size: 100%; }
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.align = "center", fig.width = 8, fig.height = 5, dpi = 150,
+  out.width = "100%"
+)
+
+options(scipen = 999)
+# Without a UTF-8 ctype, kable() renders em dashes as literal "<U+2014>".
+suppressWarnings(Sys.setlocale("LC_CTYPE", "en_US.UTF-8"))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(scales))
+
+source("R/fuel_model.R")
+
+# params carries YAML sequences through as lists; every numeric vector in this
+# document wants to be a plain numeric.
+p <- function(x) as.numeric(unlist(x))
+
+fmt_num <- function(x, d = 2) formatC(x, format = "f", digits = d, big.mark = ",")
+fmt_dkk <- function(x) formatC(round(x), format = "d", big.mark = ",")
+fmt_km <- function(x) formatC(round(x), format = "d", big.mark = ",")
+fmt_ore <- function(x) paste0(formatC(x * 100, format = "f", digits = 1), " oere")
+fmt_pct <- function(x, d = 0) paste0(formatC(100 * x, format = "f", digits = d), " %")
+
+# Low-to-high range, always reported in ascending order whatever order the
+# scenario columns arrive in.
+rng <- function(x, d = 2, unit = "") {
+  paste0(fmt_num(min(x), d), " to ", fmt_num(max(x), d), unit)
+}
+
+show_table <- function(df, ...) {
+  kable(df, format = "html", row.names = FALSE, escape = FALSE, ...) |>
+    kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+}
+```
+
+```{r plot-style, include=FALSE}
+suppressPackageStartupMessages(library(ggrepel))
+
+# Figure text is deliberately ASCII-only: the PNG device silently drops em
+# dashes and arrows, which then render as boxes inside the plot.
+pal_fuel <- c(
+  el = "#0072B2", benzin = "#D55E00", diesel = "#8B5A2B", phev = "#009E73"
+)
+lab_fuel <- c(
+  el = "Electric", benzin = "Petrol", diesel = "Diesel", phev = "Plug-in hybrid"
+)
+
+theme_note <- function(base_size = 11) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(colour = "grey92"),
+      # Titles align to the whole plot, not the panel. Several figures here have
+      # long car names on the y axis, which pushes the panel far right and would
+      # otherwise run the subtitle off the edge of the image.
+      plot.title.position = "plot",
+      plot.caption.position = "plot",
+      plot.title = element_text(face = "bold", size = base_size + 0.5),
+      plot.subtitle = element_text(colour = "grey30", margin = margin(b = 8)),
+      plot.caption = element_text(colour = "grey45", hjust = 0, size = 8.2),
+      strip.text = element_text(face = "bold"),
+      legend.position = "top",
+      legend.title = element_blank(),
+      axis.title = element_text(colour = "grey25")
+    )
+}
+```
+
+```{r load, include=FALSE}
+cars <- read.csv("fuel-cost-cars.csv",
+  stringsAsFactors = FALSE, fileEncoding = "UTF-8"
+) |> as_tibble()
+
+# Depreciation elasticities, produced by mileage_elasticity.R from
+# depreciation/bilbasen_data.csv. Regenerate with:
+#   Rscript "fuel-cost/mileage_elasticity.R"      (from the repository root)
+elast <- read.csv("mileage_elasticity.csv", stringsAsFactors = FALSE) |> as_tibble()
+
+# Statutory bracket tables for the periodiske afgifter. Separated into their own
+# file because they are law, not modelling: they change once a year and should
+# be correctable without touching anything else.
+tax_rates <- read.csv("periodic-tax-rates.csv", stringsAsFactors = FALSE) |>
+  as_tibble() |>
+  mutate(upper = if_else(upper == "Inf", Inf, suppressWarnings(as.numeric(upper))))
+
+# Published annual averages, used only to justify the width of the price bands
+# in section 2.4. Two different bases circulate for road fuel and they differ by
+# more than a krone, which is itself part of the point - see that section.
+price_hist <- read.csv("energy-price-history.csv", stringsAsFactors = FALSE) |>
+  as_tibble()
+
+# A plug-in hybrid is not a fuel group in the scrape. It is priced off the
+# petrol group, which is an assumption about the used market rather than an
+# estimate from it.
+e_km_by_fuel <- c(
+  el = elast$e_km[elast$grp == "el"],
+  benzin = elast$e_km[elast$grp == "benzin"],
+  diesel = elast$e_km[elast$grp == "diesel"]
+)
+e_km_by_fuel["phev"] <- e_km_by_fuel["benzin"]
+
+b_age_by_fuel <- c(
+  el = elast$b_age[elast$grp == "el"],
+  benzin = elast$b_age[elast$grp == "benzin"],
+  diesel = elast$b_age[elast$grp == "diesel"]
+)
+b_age_by_fuel["phev"] <- b_age_by_fuel["benzin"]
+```
+
+```{r profiles, include=FALSE}
+## ===== CONTROL PANEL, PART TWO: WHERE THE ELECTRICITY COMES FROM ==========
+## This is the single largest lever in the note and it is not a property of the
+## car. Each row is a share of annual kWh across the five price tiers and must
+## sum to one. Add or edit rows freely; `my_profile` in the YAML selects one.
+profiles <- tribble(
+  ~profile, ~home_night, ~home_avg, ~public_ac, ~dc_sub, ~dc_adhoc,
+  "House, night charging", 0.80, 0.05, 0.05, 0.07, 0.03,
+  "House, no smart control", 0.10, 0.75, 0.05, 0.07, 0.03,
+  "Long-distance driver", 0.45, 0.05, 0.05, 0.35, 0.10,
+  "Flat, no home charger", 0.00, 0.00, 0.55, 0.35, 0.10
+)
+## ==========================================================================
+
+tier_names <- c("home_night", "home_avg", "public_ac", "dc_sub", "dc_adhoc")
+tier_labels <- c(
+  home_night = "Home, night, variable tariff",
+  home_avg = "Home, household average",
+  public_ac = "Public AC (destination)",
+  dc_sub = "DC fast, with subscription",
+  dc_adhoc = "DC fast, ad hoc"
+)
+
+# Tier prices at each of the three settings.
+tier_price <- list(
+  low = c(
+    home_night = p(params$el_home_night)[1], home_avg = p(params$el_home_avg)[1],
+    public_ac = p(params$el_public_ac)[1], dc_sub = p(params$el_dc_sub)[1],
+    dc_adhoc = p(params$el_dc_adhoc)[1]
+  ),
+  central = c(
+    home_night = p(params$el_home_night)[2], home_avg = p(params$el_home_avg)[2],
+    public_ac = p(params$el_public_ac)[2], dc_sub = p(params$el_dc_sub)[2],
+    dc_adhoc = p(params$el_dc_adhoc)[2]
+  ),
+  high = c(
+    home_night = p(params$el_home_night)[3], home_avg = p(params$el_home_avg)[3],
+    public_ac = p(params$el_public_ac)[3], dc_sub = p(params$el_dc_sub)[3],
+    dc_adhoc = p(params$el_dc_adhoc)[3]
+  )
+)
+
+mix_of <- function(profile_name) {
+  row <- profiles[profiles$profile == profile_name, tier_names]
+  setNames(as.numeric(row[1, ]), tier_names)
+}
+
+my_mix <- mix_of(params$my_profile)
+```
+
+```{r scenarios, include=FALSE}
+# One scenario list per setting. `mix` is fixed across the three: the reader's
+# charging habits are not an uncertainty in the price of electricity, they are
+# a separate axis, varied on its own in section 4.3.
+make_scenario <- function(i, mix = my_mix) {
+  list(
+    el_dkk_kwh = blend_el(mix, tier_price[[i]]),
+    petrol_dkk_l = p(params$petrol_dkk_l)[i],
+    diesel_dkk_l = p(params$diesel_dkk_l)[i],
+    gap_ice = p(params$gap_ice)[i],
+    gap_ev = p(params$gap_ev)[i],
+    el_extra_loss = params$el_extra_loss,
+    tyre_set_dkk = params$tyre_set_dkk,
+    tyre_life_km = params$tyre_life_km,
+    tyre_kerb_ref = params$tyre_kerb_ref,
+    tyre_price_exp = params$tyre_price_exp,
+    tyre_wear_exp = params$tyre_wear_exp,
+    consum_dkk_km = c(
+      el = params$consum_el, benzin = params$consum_benzin,
+      diesel = params$consum_diesel, phev = params$consum_phev
+    ),
+    adblue_dkk_km = params$adblue_dkk_km,
+    hazard_free_km = params$hazard_free_km,
+    hazard_slope = params$hazard_slope,
+    hazard_mult = c(
+      el = params$hazard_mult_el, benzin = params$hazard_mult_benzin,
+      diesel = params$hazard_mult_diesel, phev = params$hazard_mult_phev
+    ),
+    b_age = b_age_by_fuel,
+    e_km = e_km_by_fuel,
+    e_km_scale = params$e_km_scale,
+    dep_m_floor = params$dep_m_floor,
+    capital_rate = params$capital_rate,
+    new_premium_loss = params$new_premium_loss,
+    tax_rates = tax_rates,
+    co2_regime_from_year = params$co2_regime_from_year,
+    udligning_factor = params$udligning_factor
+  )
+}
+
+settings <- c("low", "central", "high")
+scen <- setNames(lapply(1:3, \(i) make_scenario(i)), settings)
+sc_c <- scen$central
+
+KM <- params$my_km_aar
+YRS <- params$my_years
+
+res <- cost_across(cars, scen, KM, YRS)
+res_c <- res |> filter(setting == "central")
+
+# Marginal cost range per car, used by the headline figure and the prose.
+rangeband <- res |>
+  group_by(id, name, fuel, condition, price_dkk) |>
+  summarise(
+    lo = min(marginal_dkk_km), mid = marginal_dkk_km[setting == "central"],
+    hi = max(marginal_dkk_km), .groups = "drop"
+  ) |>
+  arrange(mid)
+
+# Specs are taken from ONE named car per fuel rather than the fleet median.
+# With three or four AWD cars per fuel type the median is not robust - the
+# petrol median is dragged to the thirsty used SUVs and produces a comparator
+# nobody would actually buy. Naming the car makes the answer attributable.
+spec_car <- c(
+  benzin = params$ref_petrol,
+  diesel = params$ref_diesel,
+  phev = cars$id[cars$fuel == "phev"][1]
+)
+
+pick <- function(df, which_id, col) df[[col]][df$id == which_id]
+ev <- res_c |> filter(id == params$ref_ev)
+pe <- res_c |> filter(id == params$ref_petrol)
+di <- res_c |> filter(id == params$ref_diesel)
+```
+
+```{r validate, include=FALSE}
+# The parameters are a mixture of facts, quotes and judgement. Guard the
+# structural ones so that a typo fails at knit time rather than propagating
+# into a table that still looks plausible.
+stopifnot(
+  "every price range must be [low, central, high], ascending" = all(
+    sapply(
+      list(
+        p(params$petrol_dkk_l), p(params$diesel_dkk_l), p(params$el_home_night),
+        p(params$el_home_avg), p(params$el_public_ac), p(params$el_dc_sub),
+        p(params$el_dc_adhoc), p(params$gap_ice), p(params$gap_ev)
+      ),
+      \(v) length(v) == 3 && !is.unsorted(v)
+    )
+  ),
+  "the real-world gap cannot be below 1: WLTP is optimistic, not pessimistic" =
+    min(p(params$gap_ice), p(params$gap_ev)) >= 1,
+  "every charging profile must sum to 1" =
+    all(abs(rowSums(profiles[, tier_names]) - 1) < 1e-9),
+  "my_profile must name a row of the profile table" =
+    params$my_profile %in% profiles$profile,
+  "the three reference cars must exist in the CSV" =
+    all(c(params$ref_ev, params$ref_petrol, params$ref_diesel) %in% cars$id),
+  # The comparison is like-for-like on drivetrain by construction. A
+  # two-wheel-drive comparator would be cheaper, lighter and more economical
+  # for reasons that have nothing to do with its fuel, so it must not slip in.
+  "every car must be all-wheel drive" =
+    !isTRUE(params$require_awd) || all(cars$drivetrain == "AWD"),
+  "a BEV needs Wh/km and an ICE car needs l/100km" = all(
+    !(cars$fuel %in% c("el", "phev") & is.na(cars$wltp_wh_km)),
+    !(cars$fuel %in% c("benzin", "diesel", "phev") & is.na(cars$wltp_l_100km))
+  ),
+  "a plug-in hybrid needs an electric share in [0, 1]" = all(
+    is.na(cars$ev_share[cars$fuel != "phev"]) |
+      cars$fuel[cars$fuel != "phev"] != "phev",
+    !is.na(cars$ev_share[cars$fuel == "phev"]),
+    cars$ev_share[cars$fuel == "phev"] >= 0,
+    cars$ev_share[cars$fuel == "phev"] <= 1
+  ),
+  "depreciation elasticities must be negative" = all(e_km_by_fuel <= 0),
+  "hazard multipliers must be non-negative" = all(
+    c(
+      params$hazard_mult_el, params$hazard_mult_benzin,
+      params$hazard_mult_diesel, params$hazard_mult_phev
+    ) >= 0
+  )
+)
+```
+
+> **What this note answers.** Which fuel source costs least per kilometre driven in Denmark today, how wide the credible range around that answer is, and where the ranking is fragile. The reference car is the **Toyota bZ4X Touring** at the `r fmt_dkk(cars$price_dkk[cars$id == "bz4x_awd"])` DKK trim; it is compared against petrol, diesel and plug-in hybrid wagons and SUVs from `r fmt_dkk(min(cars$price_dkk))` DKK to the `r fmt_dkk(max(cars$price_dkk))` DKK cap.
+>
+> **The framing is deliberately split in three.** Sections 2 to 6 hold the car fixed and ask what a kilometre costs to produce, including the "periodiske afgifter" that the state ties directly to fuel type and fuel economy. Section 7 removes the confounds in the fleet by comparing a representative car of each fuel type **at the same odometer**, on a running cost that contains no capital at all - that is the cleanest answer to "which powertrain is cheapest to run". Section 8 puts the capital back and asks the question a buyer actually faces: **how much more may the cheaper-to-run car cost and still be the cheaper car to own?**
+>
+> **Every number below is computed at knit time** from the parameter block in the source and from `fuel-cost-cars.csv`. Change an assumption, re-knit, and the prose moves with the tables. Section 1.1 says which inputs are sourced and which are judgement.
+
+## Your inputs
+
+```{r inputs-table}
+tibble(
+  Input = c(
+    "Annual distance",
+    "Years you expect to keep the car",
+    "Where you charge",
+    "Blended electricity price that implies",
+    "Petrol, central",
+    "Diesel, central",
+    "Real-world consumption vs WLTP, ICE",
+    "Real-world consumption vs WLTP, electric",
+    "Real opportunity cost of capital",
+    "Repair hazard ramp beyond 100,000 km"
+  ),
+  Setting = c(
+    paste0(fmt_km(KM), " km/yr"),
+    paste0(YRS, " yr"),
+    params$my_profile,
+    paste0(fmt_num(sc_c$el_dkk_kwh), " DKK/kWh"),
+    paste0(fmt_num(sc_c$petrol_dkk_l), " DKK/l"),
+    paste0(fmt_num(sc_c$diesel_dkk_l), " DKK/l"),
+    paste0("x ", fmt_num(sc_c$gap_ice)),
+    paste0("x ", fmt_num(sc_c$gap_ev)),
+    fmt_pct(params$capital_rate, 1),
+    paste0(fmt_num(params$hazard_slope), " DKK/km per 100,000 km")
+  ),
+  Parameter = paste0("`", c(
+    "my_km_aar", "my_years", "my_profile", "(derived)", "petrol_dkk_l",
+    "diesel_dkk_l", "gap_ice", "gap_ev", "capital_rate", "hazard_slope"
+  ), "`")
+) |>
+  show_table(align = "lll")
+```
+
+## The answer, at the settings above
+
+```{r answer-box, results='asis'}
+best_marg <- rangeband |> slice_min(mid, n = 1)
+best_ice <- rangeband |> filter(fuel != "el") |> slice_min(mid, n = 1)
+ev_rank <- which(rangeband$id == params$ref_ev)
+
+# Energy-only comparison, which is the question as usually asked.
+en_ev <- ev$c_energy
+en_pe <- pe$c_energy
+en_di <- di$c_energy
+
+be_el_petrol <- el_price_break_even(ev$use_wh_km, pe$use_l_100, sc_c$petrol_dkk_l)
+be_el_diesel <- el_price_break_even(ev$use_wh_km, di$use_l_100, sc_c$diesel_dkk_l)
+
+# Total cost, which is the question the reader actually faces.
+tot <- res_c |> arrange(total_dkk_km)
+
+cat(paste0(
+  "- **On energy alone the electric car wins, and it is not close.** ",
+  "The bZ4X Touring burns ", fmt_ore(en_ev), "/km of electricity at ",
+  fmt_num(sc_c$el_dkk_kwh), " DKK/kWh, against ", fmt_ore(en_pe),
+  "/km for the new petrol ", pe$name, " and ", fmt_ore(en_di),
+  "/km for the used diesel ", di$name, ". That is a factor of ",
+  fmt_num(en_pe / en_ev, 1), " and ", fmt_num(en_di / en_ev, 1),
+  " respectively.\n"
+))
+
+cat(paste0(
+  "- **The break-even electricity price is the number to remember: ",
+  fmt_num(be_el_petrol), " DKK/kWh against the new petrol car",
+  ", ", fmt_num(be_el_diesel), " DKK/kWh against the used diesel.** ",
+  "Above that price the electric car's energy costs more per kilometre. ",
+  "Every Danish home tariff in 2026 is far below both lines. The only tariff that comes ",
+  "close is ad-hoc DC fast charging at ", fmt_num(tier_price$central[["dc_adhoc"]]),
+  " to ", fmt_num(tier_price$high[["dc_adhoc"]]), " DKK/kWh, which ",
+  if (tier_price$central[["dc_adhoc"]] > min(be_el_petrol, be_el_diesel)) {
+    "already crosses the diesel line"
+  } else {
+    "still sits below both"
+  },
+  ". Charging habits, not the car, decide this one.\n"
+))
+
+nonenergy_ev <- ev$marginal_dkk_km - en_ev
+nonenergy_pe <- pe$marginal_dkk_km - en_pe
+n_lead_el <- sum(cumprod(rangeband$fuel == "el") == 1)
+
+cat(paste0(
+  "- **Adding everything else back does not take the advantage away.** Energy is ",
+  fmt_pct(en_ev / ev$marginal_dkk_km), " of the bZ4X's marginal cost and ",
+  fmt_pct(en_pe / pe$marginal_dkk_km), " of the petrol car's, so most of the money is ",
+  "elsewhere - but the elsewhere does not favour combustion either. The heavier car ",
+  "pays ", fmt_ore(abs(ev$c_tyres - pe$c_tyres)), "/km more for tyres and ",
+  fmt_ore(abs(ev$c_consum - pe$c_consum)), "/km less for consumables, and its non-energy ",
+  "costs total ", fmt_num(nonenergy_ev), " DKK/km against ", fmt_num(nonenergy_pe),
+  ". Marginal cost lands at ", fmt_num(ev$marginal_dkk_km), " DKK/km (range ",
+  rng(c(rangeband$lo[ev_rank], rangeband$hi[ev_rank])), ") against ",
+  fmt_num(pe$marginal_dkk_km), " for the new petrol car - the bZ4X ranks ", ev_rank,
+  " of ", nrow(rangeband), ", and ",
+  if (n_lead_el >= 2) {
+    paste0("electric cars take the first ", n_lead_el, " places outright")
+  } else {
+    paste0("the cheapest kilometre in the fleet belongs to the ", best_marg$name)
+  },
+  ".\n"
+))
+
+cat(paste0(
+  "- **That is a statement about kilometres, not about cars.** ",
+  "Once the purchase price is included the ranking changes completely. At ",
+  fmt_km(KM), " km/yr over ", YRS, " years, adding \"ejerafgift\", insurance, calendar ",
+  "depreciation and the cost of the capital, the cheapest car in the fleet is the **",
+  tot$name[1], "** at ", fmt_num(tot$total_dkk_km[1]), " DKK/km all-in against ",
+  fmt_num(ev$total_dkk_km), " for the bZ4X. The bZ4X carries ", fmt_num(ev$fixed_dkk_km),
+  " DKK/km of fixed cost - ", fmt_num(ev$fixed_dkk_km / ev$marginal_dkk_km, 1),
+  " times its entire marginal cost - so its cheaper kilometres are being asked to ",
+  "repay a much larger fixed bill. **There is a trade-off after all; it just is not ",
+  "between fuels.** Section 8 works it out as a break-even distance and a break-even price.\n"
+))
+```
+
+## 1. What "cost per kilometre" is being measured
+
+A kilometre has two quite different costs attached to it, and mixing them is the standard way this comparison goes wrong.
+
+**Marginal cost** is what the kilometre itself causes: the energy burnt, the tyre rubber left on the road, the service interval brought forward, the consumables used, the risk of an unscheduled repair moved closer, and the resale value the odometer destroys. If the car is already bought and parked outside, this is the cost of choosing to drive it.
+
+**Fixed cost** is what the year causes whether the car moves or not: "ejerafgift", insurance, the value lost to the calendar, and the return the purchase price would have earned elsewhere. Divided by distance it *looks* like a cost per kilometre, but it is not caused by the kilometre; it is caused by owning the car.
+
+The question as posed - which fuel costs least per average driven kilometre, holding distance equal - is a question about marginal cost, and on that question there really is no trade-off. Sections 2 to 5 answer it.
+
+But the fleet spans `r fmt_dkk(min(cars$price_dkk))` to `r fmt_dkk(max(cars$price_dkk))` DKK, and that price gap alone is `r fmt_num((max(cars$price_dkk) - min(cars$price_dkk)) / (KM * YRS))` DKK per kilometre driven over `r YRS` years at `r fmt_km(KM)` km/yr - **more than most of these cars' entire marginal cost**. Comparing them on marginal cost alone is not a small omission. Section 6 puts the fixed costs back and shows where the ranking flips.
+
+### 1.1 Where these numbers come from
+
+```{r sourcing}
+tibble(
+  Input = c(
+    "Petrol and diesel pump prices",
+    "Electricity tariffs and the 2026 \"elafgift\" cut",
+    "bZ4X Touring price and WLTP consumption",
+    "Toyota service tariff",
+    "Odometer elasticity of used prices",
+    "Used comparator prices",
+    "Other cars: prices, consumption, service",
+    "Real-world consumption gap over WLTP",
+    "Tyre price and life, and their weight scaling",
+    "Consumables and wear per km",
+    "Repair hazard beyond 100,000 km",
+    "\"Ejerafgift\" and insurance per car",
+    "Opportunity cost of capital"
+  ),
+  Status = c(
+    "**Sourced**", "**Sourced**", "**Sourced**", "**Sourced**",
+    "**Estimated here**", "**Listings**", "Placeholder", "Judgement",
+    "Judgement", "Judgement", "Judgement", "Placeholder", "Carried over"
+  ),
+  Basis = c(
+    "National list prices, early September 2026",
+    "skat.dk on the 2026-27 rate; elberegner.dk on the all-in household price; ladetjek.dk on public charging",
+    "Toyota Danmark",
+    "Toyota Koege price calculator, as used in the battery-warranty note",
+    "`mileage_elasticity.R` on this repository's bilbasen scrape; see 5.4",
+    paste0(
+      "`comparator_prices.R` on real bilbasen listings, for ",
+      sum(cars$price_sourced & cars$condition == "brugt"), " of ",
+      sum(cars$condition == "brugt"), " used cars; audit trail in `comparator-listings.csv`"
+    ),
+    "Consumption, weight and service costs throughout, and the prices of the cars listed below",
+    "Section 3. The single widest of the judgement calls",
+    "Section 5.2",
+    "Section 5.3",
+    "Section 5.5, which inverts it rather than defending it",
+    "Order-of-magnitude only; matters in section 8, not before",
+    "`leasing_vs_kontant.Rmd`"
+  )
+) |>
+  show_table(align = "lll")
+```
+
+```{r sourcing-detail, results='asis'}
+unsourced <- cars |> filter(!price_sourced, condition == "brugt")
+sourced_used <- cars |> filter(price_sourced, condition == "brugt")
+
+cat(paste0(
+  "**Prices matter more than any other input here**, because section 8's whole answer - ",
+  "the break-even cash price - is arithmetic on them. A comparator that is out by 30,000 ",
+  "DKK moves the conclusion further than any energy-price assumption in this document. ",
+  "So the used prices are no longer guesses: `comparator_prices.R` matches each car ",
+  "against real bilbasen listings on make, model, fuel, a registration-year window and a ",
+  "variant pattern that identifies all-wheel drive, then fits `log(price) ~ log(mileage)` ",
+  "and reads the price off at that car's odometer.\n\n"
+))
+
+if (nrow(unsourced) > 0) {
+  cat(paste0(
+    "**", nrow(unsourced), " used comparators could not be priced that way and remain ",
+    "estimates**: ", knitr::combine_words(unsourced$name), ". The scrape returned too few ",
+    "matching listings - in the case of the all-wheel-drive diesel wagons, none at all. ",
+    "That is itself informative, and it is the same finding as section 1.3 from a different ",
+    "direction: **all-wheel drive is rare enough in these classes that the Danish used ",
+    "market barely prices it.** But it does mean those rows are judgement, and one of them ",
+    "is the diesel reference car, so section 8's diesel column should be read with more ",
+    "caution than its petrol column.\n\n"
+  ))
+}
+
+cat(paste0(
+  "The new cars are a separate case. Their prices are list prices rather than listings: ",
+  "sourced for the ", knitr::combine_words(cars$name[cars$price_sourced & cars$condition == "ny"]),
+  ", and secondary or indicative for the rest. Consumption, weight and service costs are ",
+  "estimates for every car except the bZ4X and the new Enyaq.\n"
+))
+```
+
+### 1.2 Why this is a range and not a number
+
+Almost every input here is a range, and the ranges come from three different places, which is worth keeping straight.
+
+**Choices.** Electricity varies by a factor of **`r fmt_num(max(tier_price$central) / min(tier_price$central), 1)`** between a cheap night at home and an ad-hoc DC charger, and which rung you stand on is a consequence of where you live and how you drive. That is not an uncertainty to be averaged away; it means the answer for a driver with a driveway and the answer for one without are different answers to the same question.
+
+**Dispersion at a moment.** Petrol costs about `r fmt_num(params$station_spread_dkk_l)` DKK/l more at a motorway station than at an unmanned discount pump. Small, and largely under your control.
+
+**Movement over the holding period.** This is the big one, and it is easily conflated with the previous item. Over `r YRS` years the *level* of energy prices can move by several kroner a litre - the household electricity price alone ran from 1.57 to 3.17 DKK/kWh between 2020 and 2022. Today's pump prices are at or near record highs, so a band drawn tightly around them would describe the wrong risk entirely. The bands used here are drawn from that history and are set out in section 2.4.
+
+### 1.3 Every car here is all-wheel drive, and that is not free
+
+The reference car is the AWD trim, so every comparator is AWD too. Holding the drivetrain fixed is the right call - a front-wheel-drive comparator would be cheaper, lighter and more economical for reasons that have nothing to do with its fuel, and the comparison would silently credit those to the powertrain. But the constraint is not costless, and it is worth being explicit about what it does before reading any of the numbers.
+
+**It taxes the electric car too.** The bZ4X Touring is `r fmt_num(cars$wltp_wh_km[cars$id == params$ref_ev], 0)` Wh/km with the rear motor against 140 Wh/km without it - a `r fmt_pct(cars$wltp_wh_km[cars$id == params$ref_ev] / 140 - 1)` energy penalty, plus about 135 kg of extra weight on the tyres. The AWD requirement is not a thumb on the scale for either side.
+
+**It moves the whole fleet upmarket and narrows it sharply.** All-wheel drive is usually reserved for the larger engines and higher trims, which is why there is no AWD petrol Octavia in Denmark at all - the only Octavia sold with 4x4 is the 2.0 TDI. The consequence for this note is concrete:
+
+```{r awd-constraint}
+cars |>
+  mutate(grp = if_else(condition == "ny", "New", "Used")) |>
+  summarise(
+    n = n(),
+    cheapest = fmt_dkk(min(price_dkk)),
+    dearest = fmt_dkk(max(price_dkk)),
+    under_cap = sum(price_dkk <= params$price_cap_dkk),
+    .by = c(grp, fuel)
+  ) |>
+  arrange(grp, fuel) |>
+  transmute(
+    Condition = grp, Fuel = lab_fuel[fuel], Cars = n,
+    `Cheapest` = cheapest, `Dearest` = dearest,
+    `At or under ${CAP}` = under_cap
+  ) |>
+  rename_with(\(x) str_replace(x, fixed("${CAP}"), paste0(fmt_dkk(params$price_cap_dkk), " DKK"))) |>
+  show_table(align = "llrrrr")
+```
+
+```{r awd-cap-prose, results='asis'}
+new_ice <- cars |> filter(condition == "ny", fuel != "el")
+new_ev <- cars |> filter(condition == "ny", fuel == "el")
+
+if (nrow(new_ice) > 0 && min(new_ice$price_dkk) > params$price_cap_dkk) {
+  cat(paste0(
+    "**No new all-wheel-drive combustion car in this class comes in under the ",
+    fmt_dkk(params$price_cap_dkk), " DKK cap.** The cheapest here is the ",
+    new_ice$name[which.min(new_ice$price_dkk)], " at ",
+    fmt_dkk(min(new_ice$price_dkk)), " DKK, which is ",
+    fmt_dkk(min(new_ice$price_dkk) - params$price_cap_dkk),
+    " DKK over it, against ", fmt_dkk(min(new_ev$price_dkk)),
+    " DKK for the cheapest new AWD electric car. It is carried anyway rather than ",
+    "dropped, because excluding it would leave the new-car comparison empty and ",
+    "quietly convert a finding into an assumption. **That the cap and the drivetrain ",
+    "requirement together rule out new combustion rivals is itself part of the answer**, ",
+    "and it is a separate reason from cost - see section 8.4.\n"
+  ))
+} else {
+  cat(paste0(
+    "Within the ", fmt_dkk(params$price_cap_dkk),
+    " DKK cap both new electric and new combustion AWD cars are available, so the ",
+    "constraint narrows the choice without eliminating a category.\n"
+  ))
+}
+```
+
+One caveat on the modelling. All-wheel drive adds a transfer case, a propshaft and a rear differential to every car here, so its contribution to the repair hazard is common to the fleet and cancels out of the comparison. It would *not* cancel between a permanent symmetrical system and an on-demand clutch-pack one, which are different pieces of engineering with different failure modes. That distinction is not modelled.
+
+### 1.4 Can fuel cost be isolated from the price of the car, and at what mileage?
+
+Two methodological questions, and they have different answers.
+
+**Can the running cost be separated from the cash price? Yes, almost entirely.** Of the six marginal components, five are properties of the car and the driving, not of what was paid: energy, tyres, scheduled servicing, consumables and repair hazard. The "periodiske afgifter" in section 6 are the same - a bracket table on fuel economy and emissions, blind to the invoice. Only **one** component couples running cost to price, and that is the value the odometer destroys, which is proportional to what the car is worth. So the note carries a sixth quantity alongside the others:
+
+> **Price-free running cost** = energy + tyres + service + consumables + repair hazard + "periodiske afgifter", per km.
+>
+> It contains no capital at all. Two cars can be compared on it whatever they cost, and section 7 does exactly that.
+
+It is not additive with total cost - the tax appears again inside the fixed costs in section 8 - so it is a *view* of a car, not a component of one.
+
+**At what mileage? That question should not be answered, it should be removed.** The fleet in `fuel-cost-cars.csv` still confounds three things at once even with drivetrain now held fixed: the oldest combustion car in it, at `r fmt_km(max(cars$odo_km))` km, differs from a new bZ4X in powertrain *and* odometer *and* price. Picking one odometer to compare at would just be choosing which confound to keep.
+
+The alternative is to make the odometer an axis rather than an assumption: build a representative car of each fuel type from the fleet medians, then evaluate all four at the **same** odometer, sweeping it across the range a buyer would actually consider. Nothing then has to be chosen, and the reader can see whether the ranking is stable in the odometer or crosses somewhere. That is section 7, and it is the part of this note that most directly answers "which type of car is cheapest in the long run".
+
+## 2. Energy prices
+
+### 2.1 Pump prices, and the reversal nobody expected
+
+```{r pump-table}
+tibble(
+  Fuel = c("Petrol 95 (E10)", "Diesel (B7)"),
+  `Today (list)` = fmt_num(c(p(params$petrol_dkk_l)[2], p(params$diesel_dkk_l)[2])),
+  `Low over 8 yr` = fmt_num(c(p(params$petrol_dkk_l)[1], p(params$diesel_dkk_l)[1])),
+  `High over 8 yr` = fmt_num(c(p(params$petrol_dkk_l)[3], p(params$diesel_dkk_l)[3]))
+) |>
+  show_table(
+    align = "lrrr",
+    caption = paste0(
+      "DKK per litre incl. VAT. Today's figure is the September 2026 national ",
+      "list price; the range is what the level could do over an ", YRS,
+      "-year hold - see section 2.4"
+    )
+  )
+```
+
+**Diesel now costs more per litre than petrol in Denmark** - `r fmt_num(sc_c$diesel_dkk_l)` against `r fmt_num(sc_c$petrol_dkk_l)`, a reversal of the historical `r fmt_num(0.5)` to `r fmt_num(1.5)` DKK/l discount. The green tax reform pushed the CO2 duty on diesel above the duty on petrol, and diesel is the more carbon-dense fuel per litre. Diesel cars are still cheaper per kilometre, but now only because they burn fewer litres, not because the litres are cheaper - and the compensating **"udligningsafgift"** on the annual "ejerafgift" claws part of that back. The old rule of thumb that diesel pays off above some annual distance is now working against a materially worse starting position than it was three years ago.
+
+Both fuels are also on a known upward path: road transport enters the EU emissions trading system in 2027, which is expected to add more than a krone to the litre price of both.
+
+### 2.2 The electricity ladder
+
+Electricity is not a price; it is a ladder, and which rung you stand on is the largest single determinant of an electric car's running cost.
+
+```{r el-ladder, fig.height=4.6}
+ladder <- tibble(
+  tier = factor(tier_names, levels = rev(tier_names)),
+  label = tier_labels[tier_names],
+  lo = sapply(tier_names, \(t) tier_price$low[[t]]),
+  mid = sapply(tier_names, \(t) tier_price$central[[t]]),
+  hi = sapply(tier_names, \(t) tier_price$high[[t]])
+) |>
+  mutate(label = factor(label, levels = rev(tier_labels[tier_names])))
+
+be_lines <- tibble(
+  x = c(be_el_petrol, be_el_diesel),
+  lab = c(
+    paste0("Break-even vs ", pe$name),
+    paste0("Break-even vs ", di$name)
+  ),
+  col = c(unname(pal_fuel["benzin"]), unname(pal_fuel["diesel"]))
+)
+
+ggplot(ladder, aes(y = label)) +
+  geom_vline(
+    data = be_lines, aes(xintercept = x, colour = lab),
+    linewidth = 0.7, linetype = "22"
+  ) +
+  geom_linerange(aes(xmin = lo, xmax = hi), linewidth = 3.2, colour = "grey80") +
+  geom_point(aes(x = mid), size = 3.4, colour = pal_fuel[["el"]]) +
+  geom_text(aes(x = mid, label = fmt_num(mid)),
+    vjust = -1.35, size = 3.1, colour = "grey25"
+  ) +
+  scale_colour_manual(values = setNames(be_lines$col, be_lines$lab)) +
+  scale_x_continuous(
+    breaks = seq(0, 8, 1), limits = c(0, max(ladder$hi, be_lines$x) * 1.06),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  labs(
+    title = "What a kWh costs, and how expensive it would have to get",
+    subtitle = paste0(
+      "Bars are the credible range; the dot is the central value. ",
+      "The dashed lines are the price at which the\nbZ4X Touring's energy cost per km ",
+      "equals the comparator's."
+    ),
+    x = "DKK per kWh, incl. VAT", y = NULL,
+    caption = paste0(
+      "Break-even lines assume ", fmt_num(ev$use_wh_km, 0), " Wh/km real-world for the bZ4X and ",
+      fmt_num(pe$use_l_100), " / ", fmt_num(di$use_l_100), " l/100km for the comparators.\n",
+      "Sources: skat.dk (\"elafgift\" 2026-27), elberegner.dk (household all-in), ladetjek.dk (public charging)."
+    )
+  ) +
+  theme_note() +
+  theme(legend.position = "top")
+```
+
+Two things are visible at once. **Every home tariff sits far below both break-even lines**, so a driver who charges at home is not close to the margin - the electric car's energy is cheaper by a factor of `r fmt_num(en_pe / en_ev, 1)` and no plausible movement in the spot price changes that. But **ad-hoc DC fast charging at `r fmt_num(tier_price$central[["dc_adhoc"]])` DKK/kWh is `r if (tier_price$central[["dc_adhoc"]] > be_el_diesel) "past the diesel break-even line" else "still below the diesel break-even line"`**, and at the top of its range, `r fmt_num(tier_price$high[["dc_adhoc"]])` DKK/kWh, an electric car bought to be charged on the road is `r if (tier_price$high[["dc_adhoc"]] > be_el_petrol) "burning more money per kilometre than the petrol wagon" else "still ahead of the petrol wagon"`.
+
+The 2026 tax position is what makes the home end of the ladder so favourable. The **"elafgift" was cut to 0.8 oere/kWh** (1 oere including VAT) for 2026 and 2027, from 90 oere in 2025 - close to a krone per kWh off the home price. This is a temporary measure with a legislated end date, and section 9.3 shows what its expiry does to the comparison.
+
+### 2.3 What your charging profile costs
+
+```{r profile-table}
+profiles |>
+  rowwise() |>
+  mutate(
+    blended_lo = blend_el(mix_of(profile), tier_price$low),
+    blended = blend_el(mix_of(profile), tier_price$central),
+    blended_hi = blend_el(mix_of(profile), tier_price$high),
+    ev_energy = ev$use_wh_km / 1000 * blended
+  ) |>
+  ungroup() |>
+  transmute(
+    Profile = if_else(profile == params$my_profile,
+      paste0("**", profile, "**"), profile
+    ),
+    `Home %` = fmt_pct(home_night + home_avg),
+    `DC %` = fmt_pct(dc_sub + dc_adhoc),
+    `DKK/kWh` = paste0(fmt_num(blended), " (", fmt_num(blended_lo), "-", fmt_num(blended_hi), ")"),
+    `bZ4X energy, DKK/km` = fmt_num(ev_energy),
+    `vs new petrol` = paste0(fmt_num(en_pe / ev_energy, 1), "x cheaper")
+  ) |>
+  show_table(align = "lrrrrr")
+```
+
+Even the worst profile in the table - a flat with no home charger, everything bought on public infrastructure - leaves the electric car ahead of the new petrol wagon on energy. That is the 2026 answer, and it is a stronger answer than it was in 2025.
+
+### 2.4 Where today's price sits in its own history
+
+Today's pump prices are at or near record highs, and a range of a few øre either side of a record is not a credible description of what an eight-year hold is exposed to. The bands used in this note are drawn from the following history instead.
+
+```{r price-history, fig.height=4.8}
+hist_fuel <- price_hist |>
+  filter(series %in% c("petrol", "diesel"), basis == "street")
+hist_el <- price_hist |> filter(series == "electricity")
+
+bands <- tibble(
+  series = c("petrol", "diesel"),
+  # Offset so the two translucent rectangles sit side by side rather than on
+  # top of each other, where neither colour is readable.
+  x = c(2026.85, 2027.45),
+  lo = c(p(params$petrol_dkk_l)[1], p(params$diesel_dkk_l)[1]),
+  mid = c(p(params$petrol_dkk_l)[2], p(params$diesel_dkk_l)[2]),
+  hi = c(p(params$petrol_dkk_l)[3], p(params$diesel_dkk_l)[3])
+)
+
+pal_series <- c(petrol = unname(pal_fuel["benzin"]), diesel = unname(pal_fuel["diesel"]))
+
+ggplot(hist_fuel, aes(year, dkk, colour = series)) +
+  geom_rect(
+    data = bands, inherit.aes = FALSE,
+    aes(xmin = x - 0.25, xmax = x + 0.25, ymin = lo, ymax = hi, fill = series),
+    alpha = 0.30
+  ) +
+  geom_linerange(
+    data = bands, inherit.aes = FALSE,
+    aes(x = x, ymin = lo, ymax = hi, colour = series), linewidth = 0.7
+  ) +
+  geom_point(
+    data = bands, inherit.aes = FALSE,
+    aes(x = x, y = mid, colour = series), size = 2.8
+  ) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.2) +
+  annotate("text",
+    x = mean(bands$x), y = max(bands$hi), hjust = 0.5, vjust = -0.7, size = 3.1,
+    colour = "grey30", label = "range used in this note"
+  ) +
+  scale_colour_manual(values = pal_series, labels = c(diesel = "Diesel", petrol = "Petrol 95")) +
+  scale_fill_manual(values = pal_series, guide = "none") +
+  scale_x_continuous(breaks = 2020:2026, limits = c(2019.8, 2028.0)) +
+  # Headroom for the label sitting above the taller of the two bands.
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.14))) +
+  labs(
+    title = "Danish road fuel: seven flat years, then a step",
+    subtitle = paste0(
+      "Annual average street prices. Diesel rose ",
+      fmt_pct(hist_fuel$dkk[hist_fuel$series == "diesel" & hist_fuel$year == 2026] /
+        hist_fuel$dkk[hist_fuel$series == "diesel" & hist_fuel$year == 2025] - 1),
+      " in a single year and overtook petrol - both are\nnear record levels, which is the reason the band on the right is asymmetric downwards."
+    ),
+    x = NULL, y = "DKK per litre",
+    caption = paste0(
+      "History: tankstation.nu annual averages. A second published series (list prices) runs roughly ",
+      "1 to 1.5 DKK/l\nhigher; the note's central values are on that list basis, so read the shape here rather than the level."
+    )
+  ) +
+  theme_note()
+```
+
+Three things follow.
+
+**The step is recent and it is large.** Diesel spent 2020-2025 in a band of barely a krone and then rose `r fmt_pct(hist_fuel$dkk[hist_fuel$series == "diesel" & hist_fuel$year == 2026] / hist_fuel$dkk[hist_fuel$series == "diesel" & hist_fuel$year == 2025] - 1)` in a single year, overtaking petrol. A level reached that recently, that fast, is not a safe base case to hold flat for eight years.
+
+**So the band is asymmetric downwards, deliberately.** The low end is not a crash scenario; it is a return to where both fuels sat in 2024-25. The high end is a 2022-style shock arriving on top of the ETS2 duty increase due in 2027. Neither tail is exotic - both have happened inside the last six years.
+
+**Electricity gets the same treatment, and needs it more.** The household all-in price ran `r fmt_num(hist_el$dkk[hist_el$year == 2020])` DKK/kWh in 2020 and `r fmt_num(hist_el$dkk[hist_el$year == 2022])` in 2022 - a factor of `r fmt_num(hist_el$dkk[hist_el$year == 2022] / hist_el$dkk[hist_el$year == 2020], 1)`, wider in proportion than anything road fuel did in the same period. Widening the petrol band while leaving electricity at a few øre either side of today would have quietly rigged the comparison, so both were widened together.
+
+> **One thing the bands do not capture.** The low, central and high settings move petrol, diesel and electricity **together**, because that is what happened in 2022: an energy shock raises all of them. That is the correlated case, and it is the *favourable* one for a comparison - it partly cancels. The genuinely awkward scenario is the decorrelated one, cheap oil with expensive electricity, and no single band can show it. Section 9.1 varies the two independently for exactly that reason, and section 9.4 asks how far petrol alone would have to fall.
+
+## 3. From WLTP to the road
+
+WLTP is a laboratory cycle run at 23 degrees with no heater, no roof box and no headwind. Real Danish consumption is higher, and it is higher by different amounts for different powertrains.
+
+For a combustion car the gap is mostly cold starts, short trips and motorway speed: a multiplier of about `r fmt_num(sc_c$gap_ice)` centrally, `r rng(p(params$gap_ice)) ` across the range. For an electric car the same effects apply and one more is added on top - cabin heating comes out of the traction battery rather than out of waste engine heat, and in a Danish winter that is a large draw. The central multiplier here is `r fmt_num(sc_c$gap_ev)`, range `r rng(p(params$gap_ev))`.
+
+This asymmetry is real and it works against the electric car, so it is worth being explicit that **it is a judgement call, not a measurement**, and one of the widest in the note. It is also self-limiting: because electricity is so much cheaper per unit of energy, even the high end of the EV gap does not close the energy gap.
+
+```{r consumption-table}
+res_c |>
+  transmute(
+    Car = name,
+    Fuel = lab_fuel[fuel],
+    `Type approval` = if_else(fuel %in% c("el", "phev"),
+      paste0(fmt_num(wltp_wh_km, 0), " Wh/km"),
+      paste0(fmt_num(wltp_l_100km, 1), " l/100km")
+    ),
+    `Real world` = case_when(
+      fuel == "el" ~ paste0(fmt_num(use_wh_km, 0), " Wh/km"),
+      fuel == "phev" ~ paste0(
+        fmt_num(use_wh_km, 0), " Wh/km + ", fmt_num(use_l_100, 1), " l/100km"
+      ),
+      TRUE ~ paste0(fmt_num(use_l_100, 1), " l/100km")
+    ),
+    `Energy, DKK/km` = fmt_num(c_energy),
+    `Energy per 1,000 km` = fmt_dkk(c_energy * 1000)
+  ) |>
+  show_table(align = "llrrrr")
+```
+
+The plug-in hybrid carries a caveat the others do not. Its cost depends on the **electric share** - here `r fmt_pct(cars$ev_share[cars$fuel == "phev"][1])` - which is not a property of the car but of how disciplined the owner is about plugging it in. A plug-in hybrid that is never charged is a heavy petrol SUV; one that is charged every night is an electric car with a petrol reserve. It is the one powertrain for which "assume the same kilometres" is not enough to pin down the cost.
+
+## 4. The headline: marginal cost per kilometre
+
+### 4.1 The comparison, with its ranges
+
+```{r headline, fig.height=6}
+plot_df <- rangeband |>
+  mutate(
+    lab = paste0(name, "  (", fmt_dkk(price_dkk), " DKK)"),
+    # rangeband is ascending and ggplot draws the first level at the BOTTOM, so
+    # the levels are reversed to put the cheapest car at the top where the title
+    # says it is.
+    lab = factor(lab, levels = rev(lab))
+  )
+
+ggplot(plot_df, aes(y = lab, colour = fuel)) +
+  geom_linerange(aes(xmin = lo, xmax = hi), linewidth = 2.6, alpha = 0.35) +
+  geom_point(aes(x = mid), size = 3.2) +
+  geom_text(aes(x = hi, label = fmt_num(mid)),
+    hjust = -0.35, size = 3.05, colour = "grey30"
+  ) +
+  scale_colour_manual(values = pal_fuel, labels = lab_fuel, breaks = names(pal_fuel)) +
+  scale_x_continuous(
+    labels = label_number(accuracy = 0.5),
+    expand = expansion(mult = c(0.02, 0.10))
+  ) +
+  labs(
+    title = "Marginal cost per kilometre, cheapest first",
+    subtitle = paste0(
+      "Energy, tyres, servicing, consumables, repair hazard, odometer depreciation.\n",
+      "Purchase price, insurance, \"ejerafgift\" and calendar depreciation are NOT\n",
+      "included - see section 8. At ", fmt_km(KM), " km/yr over ", YRS, " years."
+    ),
+    x = "DKK per km", y = NULL,
+    caption = paste0(
+      "Bars span the credible range of energy PRICE LEVELS over the holding period (section 2.4) ",
+      "and the real-world\nconsumption gap. Petrol, diesel and electricity move together across the ",
+      "band, which partly cancels;\nsection 9.1 varies them independently.\n",
+      sum(cars$price_sourced), " of ", nrow(cars),
+      " car prices come from listings or price lists - see section 1.1."
+    )
+  ) +
+  theme_note()
+```
+
+Three things stand out.
+
+**The electric cars win, and `r if (max(rangeband$hi[rangeband$fuel == "el"]) < min(rangeband$lo[rangeband$fuel %in% c("benzin", "diesel")])) "their ranges do not overlap the combustion cars at all" else "the overlap between the two groups is small"`.** `r if (max(rangeband$hi[rangeband$fuel == "el"]) < min(rangeband$lo[rangeband$fuel %in% c("benzin", "diesel")])) "The dearest electric car in the fleet costs less per kilometre than the cheapest combustion car, at every setting of the energy prices and the consumption gap." else "Only the extremes of the two groups meet, and only at opposite ends of the price ranges."` This is a stronger result than the energy comparison alone implies, and it is worth being explicit about why: the tyre penalty is real - the bZ4X pays `r fmt_ore(abs(ev$c_tyres - pe$c_tyres))`/km more than the Octavia - but it is roughly cancelled by cheaper consumables and servicing, so almost the whole energy advantage survives to the bottom line. **On marginal cost the premise in the question is correct: nothing has to be traded off.**
+
+**The gap is bigger than the energy prices suggest, not smaller.** The bZ4X is `r fmt_ore(pe$marginal_dkk_km - ev$marginal_dkk_km)`/km cheaper than the new petrol wagon, against an energy gap of `r fmt_ore(en_pe - en_ev)`/km. The extra `r fmt_ore((pe$marginal_dkk_km - ev$marginal_dkk_km) - (en_pe - en_ev))`/km is almost entirely one component - the value the odometer destroys - and it rests on the weakest estimate in the note. Section 5.4 sets out why the electric depreciation elasticity should not be trusted at face value, and section 9.2 bounds what it can do.
+
+**The cheap old cars are not cheap per kilometre.** The `r rangeband$name[nrow(rangeband)]` has the *highest* marginal cost in the fleet at `r fmt_num(rangeband$mid[nrow(rangeband)])` DKK/km, despite the cheapest fuel bill of any combustion car, because the repair hazard at `r fmt_km(res_c$odo_mid[res_c$id == rangeband$id[nrow(rangeband)]])` km swamps everything else. That is the single most assumption-dependent result here, and section 5.5 inverts it rather than defending it.
+
+### 4.2 Where the money actually goes
+
+```{r decomposition, fig.height=6}
+comp_labels <- c(
+  c_energy = "Energy", c_dep_km = "Odometer depreciation", c_tyres = "Tyres",
+  c_service = "Scheduled service", c_consum = "Consumables and wear",
+  c_repair = "Repair hazard"
+)
+
+res_c |>
+  select(id, name, fuel, all_of(names(comp_labels))) |>
+  pivot_longer(all_of(names(comp_labels)), names_to = "comp", values_to = "dkk") |>
+  mutate(
+    comp = factor(comp_labels[comp], levels = rev(comp_labels)),
+    # Reversed for the same reason as the headline figure: ggplot draws the
+    # first factor level at the bottom, and these two figures must agree.
+    name = factor(name, levels = rev(rangeband$name))
+  ) |>
+  ggplot(aes(y = name, x = dkk, fill = comp)) +
+  geom_col(width = 0.72) +
+  scale_fill_brewer(palette = "Set2", direction = -1) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.02))) +
+  labs(
+    title = "Fuel is between a third and two thirds of the cost of driving",
+    subtitle = paste0(
+      "Central setting, ", fmt_km(KM), " km/yr over ", YRS, " years. ",
+      "Cars in the same order as the previous figure."
+    ),
+    x = "DKK per km", y = NULL,
+    caption = "Odometer depreciation is the resale value a kilometre destroys; see section 5.4."
+  ) +
+  theme_note() +
+  theme(legend.position = "right", legend.text = element_text(size = 8.6))
+```
+
+Energy is `r fmt_pct(en_ev / ev$marginal_dkk_km)` of the bZ4X's marginal cost and `r fmt_pct(en_pe / pe$marginal_dkk_km)` of the new petrol wagon's. **A comparison built on pump and charger prices alone is arguing about roughly half the money**, and the half it leaves out is not neutral between the two: for the newest and most expensive cars the second-largest component is the value the odometer removes, and for the oldest it is the repair hazard. Both of those cut across fuel type rather than along it.
+
+The one component that clearly favours combustion is tyres, and only because of weight. It is worth `r fmt_ore(abs(ev$c_tyres - pe$c_tyres))`/km, against `r fmt_ore(abs(ev$c_consum - pe$c_consum))`/km the other way on consumables. Those two very nearly cancel, which is why the energy advantage passes through to the bottom line almost undiminished.
+
+### 4.3 The one axis that changes the electric answer
+
+Charging habits move the electric cars and nothing else, so they are shown on their own axis rather than folded into the range.
+
+```{r charging-sweep, fig.height=4.8}
+sweep <- map_dfr(seq(0, 1, by = 0.02), function(home) {
+  # Sweep the home share against a fixed split of the remainder between public
+  # AC and DC, so that the curve is one-dimensional and readable.
+  rest <- 1 - home
+  mix <- c(
+    home_night = home, home_avg = 0,
+    public_ac = rest * 0.4, dc_sub = rest * 0.45, dc_adhoc = rest * 0.15
+  )
+  sc <- make_scenario(2, mix)
+  cost_per_km(cars, sc, KM, YRS) |>
+    filter(fuel %in% c("el", "phev")) |>
+    transmute(home_share = home, name, fuel, marginal_dkk_km)
+})
+
+ice_ref <- res_c |>
+  filter(fuel %in% c("benzin", "diesel")) |>
+  arrange(marginal_dkk_km) |>
+  slice(c(1, n()))
+
+ggplot(sweep, aes(home_share, marginal_dkk_km, group = name, colour = fuel)) +
+  annotate("rect",
+    xmin = -Inf, xmax = Inf,
+    ymin = min(ice_ref$marginal_dkk_km), ymax = max(ice_ref$marginal_dkk_km),
+    fill = "grey85", alpha = 0.55
+  ) +
+  annotate("text",
+    x = 0.02, y = max(ice_ref$marginal_dkk_km), hjust = 0, vjust = -0.5,
+    size = 3.1, colour = "grey35",
+    label = "Range spanned by the petrol and diesel cars"
+  ) +
+  geom_line(linewidth = 0.85) +
+  # Labelled at the right-hand end: at the left end the four electric curves are
+  # within a few oere of each other and the labels sit on top of the lines.
+  geom_text_repel(
+    data = sweep |> filter(home_share == 1),
+    aes(label = name), hjust = 0, nudge_x = 0.03, direction = "y",
+    size = 3, seed = 1, segment.colour = "grey70", min.segment.length = 0,
+    max.overlaps = Inf, box.padding = 0.25
+  ) +
+  scale_colour_manual(values = pal_fuel, labels = lab_fuel, breaks = names(pal_fuel)) +
+  # Breaks are pinned to 0-100 % so that the room left for the labels on the
+  # right does not produce a meaningless "125 %" tick.
+  scale_x_continuous(
+    labels = percent_format(accuracy = 1), breaks = seq(0, 1, 0.25),
+    expand = expansion(mult = c(0.02, 0.44))
+  ) +
+  labs(
+    title = "How much of the electric advantage survives without a driveway",
+    subtitle = paste0(
+      "Marginal cost per km as the share of charging done at home on a night tariff falls to zero.\n",
+      "The remainder is split 40 % public AC, 45 % subscribed DC, 15 % ad hoc."
+    ),
+    x = "Share of kWh charged at home on a night tariff",
+    y = "DKK per km, marginal",
+    caption = "Central setting. Only the electric and plug-in cars move; the grey band is where the combustion cars sit."
+  ) +
+  theme_note()
+```
+
+```{r sweep-prose, results='asis'}
+ev_sweep <- sweep |> filter(name == ev$name)
+ev_at_0 <- ev_sweep$marginal_dkk_km[ev_sweep$home_share == 0]
+ev_at_1 <- ev_sweep$marginal_dkk_km[ev_sweep$home_share == 1]
+cheapest_ice <- min(ice_ref$marginal_dkk_km)
+
+cat(paste0(
+  "The driveway is worth ", fmt_ore(ev_at_0 - ev_at_1), "/km, or about ",
+  fmt_dkk((ev_at_0 - ev_at_1) * KM), " DKK a year at ", fmt_km(KM),
+  " km - a large sum, and the single biggest lever an electric owner controls. ",
+  "But the decisive point is where the curve ends rather than how far it falls: ",
+  "with **no home charging at all**, every kilowatt-hour bought on public ",
+  "infrastructure, the bZ4X still comes to ", fmt_num(ev_at_0), " DKK/km against ",
+  fmt_num(cheapest_ice), " for the cheapest combustion car in the fleet. ",
+  if (ev_at_0 < cheapest_ice) {
+    paste0(
+      "**The electric car does not need a driveway to win in 2026 - it needs one to win by ",
+      fmt_num(cheapest_ice / ev_at_1, 1), "x instead of ",
+      fmt_num(cheapest_ice / ev_at_0, 1), "x.** How much of that depends on the temporary ",
+      "\"elafgift\" cut rather than on the car is the subject of section 9.3."
+    )
+  } else {
+    paste0(
+      "**Without home charging the advantage is gone**, and the ladder in section 2.2 ",
+      "becomes the whole decision rather than a detail of it."
+    )
+  }, "\n"
+))
+```
+
+## 5. The components that are not fuel
+
+### 5.1 Scheduled servicing
+
+Service is priced from the alternating small/large schedule each manufacturer publishes, at whichever comes first of the distance and the time interval. The Toyota figures are the same sourced tariff used in the battery-warranty note; the others are placeholders.
+
+Applying the time limit matters more than it looks. At `r fmt_km(KM)` km/yr the distance interval binds for `r sum(res_c$service_interval_km <= KM * res_c$service_interval_aar)` of the `r nrow(res_c)` cars, but at 8,000 km/yr it binds for `r {x <- cost_per_km(cars, sc_c, 8000, YRS); sum(x$service_interval_km <= 8000 * x$service_interval_aar)}` - a low-mileage driver pays for the same services over fewer kilometres, and per-kilometre service cost rises accordingly. Ignoring that would have flattered every low-distance scenario, which is exactly the region where the answer is closest.
+
+### 5.2 Tyres, and the weight penalty
+
+```{r tyres-table}
+res_c |>
+  arrange(desc(kerb_kg)) |>
+  transmute(
+    Car = name,
+    `Kerb weight` = paste0(fmt_km(kerb_kg), " kg"),
+    `Set of four` = fmt_dkk(params$tyre_set_dkk * (kerb_kg / params$tyre_kerb_ref)^params$tyre_price_exp),
+    `Life` = paste0(fmt_km(params$tyre_life_km * (params$tyre_kerb_ref / kerb_kg)^params$tyre_wear_exp), " km"),
+    `DKK/km` = fmt_num(c_tyres)
+  ) |>
+  show_table(align = "lrrrr")
+```
+
+The bZ4X Touring AWD weighs `r fmt_km(ev$kerb_kg)` kg, `r fmt_km(ev$kerb_kg - pe$kerb_kg)` kg more than the `r pe$name`, and that weight has to be carried on four contact patches and stopped by four tyres. Both the price of a set and the rate it wears scale with it. The result is `r fmt_ore(ev$c_tyres - pe$c_tyres)`/km against the electric car - which is `r fmt_pct((ev$c_tyres - pe$c_tyres) / (en_pe - en_ev))` of the energy advantage handed straight back.
+
+Two exponents drive this and both are judgement: `tyre_price_exp` = `r params$tyre_price_exp` and `tyre_wear_exp` = `r params$tyre_wear_exp`. Setting them both to zero, so that weight has no effect at all, would move the electric-versus-petrol marginal gap by `r {sc0 <- sc_c; sc0$tyre_price_exp <- 0; sc0$tyre_wear_exp <- 0; x <- cost_per_km(cars, sc0, KM, YRS); fmt_ore(abs((x$marginal_dkk_km[x$id == params$ref_ev] - x$marginal_dkk_km[x$id == params$ref_petrol]) - (ev$marginal_dkk_km - pe$marginal_dkk_km)))}`/km. Not decisive on its own; not negligible either.
+
+A note on Danish practice: most drivers run two seasonal sets. That doubles the tyre *stock* but not the wear per kilometre, so it is a fixed cost of a few hundred kroner a year in storage and changeovers, not a marginal one, and it is left out here.
+
+### 5.3 Consumables and wear
+
+`r fmt_num(params$consum_el)` DKK/km for electric, `r fmt_num(params$consum_benzin)` for petrol, `r fmt_num(params$consum_diesel)` for diesel, plus `r fmt_num(params$adblue_dkk_km)` where AdBlue is used. These cover what falls outside the service schedule: oil top-ups, brake pads and discs, exhaust, spark or glow plugs, EGR valves and particulate filters.
+
+The electric figure is low for two structural reasons, not one. There is no oil, no filter and no plug; and regenerative braking means the friction brakes are used so lightly that pads and discs often outlast the car. The `r fmt_ore(params$consum_diesel - params$consum_el)`/km spread between diesel and electric is a judgement, but the *sign* and rough magnitude are not seriously in dispute.
+
+### 5.4 What the odometer does to resale value
+
+This is the component most often left out of fuel comparisons and it is frequently the largest one. A kilometre driven does not only burn energy - it removes value from the car, and how much depends on the fuel type.
+
+The elasticities are estimated in `mileage_elasticity.R` from this repository's own bilbasen scrape, fitting `log(price) ~ age + log(mileage) + log(hk) + brand` within each fuel group.
+
+```{r elasticity-table}
+elast |>
+  transmute(
+    Fuel = lab_fuel[grp],
+    Listings = fmt_dkk(n),
+    `Elasticity` = paste0(fmt_num(e_km, 3), " (se ", fmt_num(se_km, 3), ")"),
+    `Without controls` = fmt_num(e_km_nocontrols, 3),
+    `R-squared` = fmt_num(r2, 2),
+    `Median odometer` = paste0(fmt_km(med_km), " km")
+  ) |>
+  show_table(align = "lrrrrr")
+```
+
+Read the elasticity as: a 1 % higher odometer goes with `|e|` % lower asking price, holding age, power and brand constant. Petrol at `r fmt_num(e_km_by_fuel[["benzin"]], 3)` and diesel at `r fmt_num(e_km_by_fuel[["diesel"]], 3)` are both large and precisely estimated. Diesel's is nearly twice petrol's, which fits the market: diesels are bought *for* distance, and a high-mileage diesel is competing against a lot of other high-mileage diesels.
+
+**The electric estimate is the fragile one and must be flagged.** At `r fmt_num(e_km_by_fuel[["el"]], 3)` it implies the odometer barely matters for an EV's resale. But without the power and brand controls the same regression returns **`r fmt_num(elast$e_km_nocontrols[elast$grp == "el"], 3)`** - the wrong sign entirely, because in the Danish used-EV market the cars with high mileage are disproportionately the expensive long-range ones. A coefficient whose sign depends on the controls is not something to build a conclusion on. It flatters the electric cars here, and section 9.2 scales all three elasticities to show by how much.
+
+Two further caveats apply to all three. These are **asking prices in a cross-section**, not transaction prices on the same car over time, so any unobserved reason that high-mileage cars differ from low-mileage ones is loaded onto the coefficient. And they are fitted between the 25th and 75th percentile odometers in the table; extrapolating to 300,000 km is extrapolation.
+
+```{r dep-table}
+res_c |>
+  arrange(desc(c_dep_km)) |>
+  transmute(
+    Car = name,
+    `Price` = fmt_dkk(price_dkk),
+    `Odometer at purchase` = fmt_km(odo_km),
+    `After ${YRS} yr` = fmt_km(odo_km + km_total),
+    `Value the km destroy` = fmt_dkk(c_dep_km * km_total),
+    `DKK/km` = fmt_num(c_dep_km)
+  ) |>
+  rename_with(\(x) str_replace(x, fixed("${YRS}"), as.character(YRS))) |>
+  show_table(align = "lrrrrr")
+```
+
+```{r dep-oldest, include=FALSE}
+# The highest-odometer car in the fleet, whichever it is after an edit to the
+# CSV: the clearest illustration of a car with little value left to lose.
+oldest <- res_c |> slice_max(odo_km, n = 1)
+```
+
+The pattern has two halves, pulling in opposite directions. **A car that has already lost its value has little left for a kilometre to take:** the `r oldest$name` loses only `r fmt_ore(oldest$c_dep_km)`/km to the odometer against `r fmt_ore(pe$c_dep_km)`/km for the new petrol comparator. But **the electric cars are cheap here for a different and much less solid reason** - not because they have little value left, but because the fitted elasticity says the odometer barely touches an EV's price. The bZ4X loses `r fmt_ore(ev$c_dep_km)`/km despite being the most expensive car in the fleet.
+
+That single coefficient is worth `r fmt_ore(pe$c_dep_km - ev$c_dep_km)`/km of the bZ4X's advantage over the new petrol wagon, which is `r fmt_pct((pe$c_dep_km - ev$c_dep_km) / (pe$marginal_dkk_km - ev$marginal_dkk_km))` of the total gap between them. It is also the coefficient whose sign flips when the controls change. If you distrust one number in this document, distrust that one - section 9.2 shows what happens when it is scaled, and the answer survives, but the margin does not survive intact.
+
+### 5.5 Repair hazard: the number that decides the cheap cars
+
+Beyond `r fmt_km(params$hazard_free_km)` km the model adds an expected unscheduled repair cost that ramps at `r fmt_num(params$hazard_slope)` DKK/km per 100,000 km past the threshold, multiplied by `r params$hazard_mult_el` for electric, `r params$hazard_mult_benzin` for petrol and `r params$hazard_mult_diesel` for diesel. The diesel multiplier carries turbochargers, injectors, EGR valves and particulate filters, all of which are expensive and all of which fail on distance rather than on age.
+
+This assumption is doing real work: it is what pushes the high-odometer cars to the *bottom* of the marginal-cost ranking despite their cheap fuel. So rather than defend the point estimate, here is what it would have to be to change the answer. The cheap end of the fleet is where the bZ4X's real competition lives on **total** cost, so the inversion below is run on total cost, not marginal.
+
+```{r hazard-inversion}
+# The high-odometer cars: the ones whose cost this assumption actually moves.
+cheap_ids <- cars$id[cars$odo_km >= 150000]
+
+map_dfr(p(params$hazard_slope_sensitivity), function(s) {
+  sc <- sc_c
+  sc$hazard_slope <- s
+  cost_per_km(cars, sc, KM, YRS) |> mutate(slope = s)
+}) |>
+  filter(id %in% c(cheap_ids, params$ref_ev)) |>
+  transmute(
+    slope = paste0("slope = ", fmt_num(slope)), name,
+    v = paste0(fmt_num(total_dkk_km), " (", fmt_num(marginal_dkk_km), ")")
+  ) |>
+  pivot_wider(names_from = slope, values_from = v) |>
+  rename(Car = name) |>
+  show_table(
+    align = "lrrr",
+    caption = "Total DKK/km, with marginal in brackets"
+  )
+```
+
+```{r hazard-prose, results='asis'}
+# The high-odometer car that runs the bZ4X closest on total cost at the assumed
+# slope: the one where this parameter could actually flip a decision.
+rival <- res_c |>
+  filter(id %in% cheap_ids) |>
+  slice_min(total_dkk_km, n = 1)
+
+solve_slope <- function(target_id, against_id, lo = 0, hi = 3) {
+  f <- function(s) {
+    sc <- sc_c
+    sc$hazard_slope <- s
+    x <- cost_per_km(cars, sc, KM, YRS)
+    x$total_dkk_km[x$id == target_id] - x$total_dkk_km[x$id == against_id]
+  }
+  if (sign(f(lo)) == sign(f(hi))) {
+    return(NA_real_)
+  }
+  uniroot(f, c(lo, hi), tol = 1e-4)$root
+}
+
+s_star <- solve_slope(rival$id, params$ref_ev)
+
+if (is.na(s_star)) {
+  cat(paste0(
+    "Across a hazard slope from 0 to 3.00 DKK/km per 100,000 km, the **", rival$name,
+    "** - the closest high-mileage car to the bZ4X on total cost - never crosses it. ",
+    "The ranking between them is not an artefact of this assumption, which is the ",
+    "reassuring answer.\n"
+  ))
+} else {
+  yearly <- repair_dkk_km(
+    rival$odo_mid, params$hazard_free_km, s_star, unname(sc_c$hazard_mult[rival$fuel])
+  ) * KM
+  cat(paste0(
+    "The **", rival$name, "** is the high-mileage car that runs the bZ4X closest on ",
+    "total cost. The two swap places at a hazard slope of **", fmt_num(s_star),
+    " DKK/km per 100,000 km**, which is ", fmt_num(s_star / params$hazard_slope, 1),
+    " times the assumed value. At that car's ", fmt_km(rival$odo_mid),
+    " km mid-hold odometer, that slope implies about **", fmt_dkk(yearly),
+    " DKK a year** in unscheduled repairs, against ",
+    fmt_dkk(rival$c_repair * KM), " DKK at the assumed slope.\n\n",
+    "That is the number to have an opinion about, and it is not a question about fuel ",
+    "at all - it is a question about one specific car's service history. Which is the ",
+    "honest finding for the cheap end of the market: **below about 100,000 DKK the ",
+    "powertrain stops being what decides the cost per kilometre**, and the individual ",
+    "car's condition takes over. No amount of modelling substitutes for a mechanic's ",
+    "inspection there.\n"
+  ))
+}
+```
+
+## 6. The periodic taxes ("periodiske afgifter")
+
+The annual road tax is the one cost in this note that is a **direct function of fuel type and fuel economy**, written into statute. It is not an estimate, and it is not neutral between powertrains - it is the instrument the state uses to make them non-neutral. It is charged twice a year; everything below is the annual total.
+
+### 6.1 Two regimes, split by registration date
+
+Denmark runs two parallel systems and this fleet straddles the boundary.
+
+- **"CO2-ejerafgift"** applies to cars first registered on or after 1 July 2021, on brackets of WLTP CO2 in g/km. Every battery-electric car sits in the bottom bracket at `r fmt_dkk(2 * tax_rates$dkk_half_year[tax_rates$regime == "co2"][1])` DKK/yr.
+- **"Grøn ejerafgift"** ("brændstofforbrugsafgift") applies to everything registered before that, on brackets of fuel economy in km/l. An electric car's consumption is converted by dividing Wh/km by the statutory factor 91.25 - which puts the fleet's pre-2022 electric car, at `r fmt_num(min(cars$wltp_wh_km[cars$fuel == "el" & cars$reg_year < params$co2_regime_from_year]), 0)` Wh/km, on `r fmt_num(ev_km_per_litre(min(cars$wltp_wh_km[cars$fuel == "el" & cars$reg_year < params$co2_regime_from_year])), 0)` km/l equivalent, i.e. the top bracket.
+- **Diesel pays an "udligningsafgift" on top** under both regimes, compensating for diesel's historically lower duty at the pump.
+- **"Vægtafgift"** is not modelled: it applies to petrol cars first registered before 1 July 1997, and nothing in the fleet is that old.
+
+```{r tax-table}
+res_c |>
+  mutate(
+    regime = if_else(reg_year >= params$co2_regime_from_year,
+      "CO2", "km/l"
+    ),
+    # Type-approval figures, because that is what the assessment uses - not the
+    # real-world consumption that drives the energy cost everywhere else.
+    basis = case_when(
+      reg_year >= params$co2_regime_from_year ~ paste0(fmt_num(co2_g_km, 0), " g/km"),
+      fuel == "el" ~ paste0(fmt_num(ev_km_per_litre(wltp_wh_km), 1), " km/l eq."),
+      TRUE ~ paste0(fmt_num(100 / wltp_l_100km, 1), " km/l")
+    )
+  ) |>
+  arrange(ejerafgift_dkk_aar) |>
+  transmute(
+    Car = name,
+    Fuel = lab_fuel[fuel],
+    Regime = regime,
+    Basis = basis,
+    `DKK/yr` = fmt_dkk(ejerafgift_dkk_aar),
+    `oere/km` = fmt_num(tax_dkk_km * 100, 1)
+  ) |>
+  show_table(align = "lllrrr")
+```
+
+```{r tax-prose, results='asis'}
+tax_el <- res_c |> filter(fuel == "el")
+tax_di <- res_c |> filter(fuel == "diesel")
+tax_pe <- res_c |> filter(fuel == "benzin")
+
+cat(paste0(
+  "The spread across the fleet is ", fmt_dkk(min(res_c$ejerafgift_dkk_aar)), " to ",
+  fmt_dkk(max(res_c$ejerafgift_dkk_aar)), " DKK a year. Electric cars pay ",
+  fmt_dkk(mean(tax_el$ejerafgift_dkk_aar)), " on average, petrol ",
+  fmt_dkk(mean(tax_pe$ejerafgift_dkk_aar)), " and diesel ",
+  fmt_dkk(mean(tax_di$ejerafgift_dkk_aar)),
+  " - the diesel figure carrying an \"udligningsafgift\" of ",
+  fmt_dkk(mean(tax_di$ejerafgift_dkk_aar) - mean(tax_pe$ejerafgift_dkk_aar)),
+  " more than the petrol cars on top of a similar consumption charge. ",
+  "At ", fmt_km(KM), " km/yr that is worth ",
+  fmt_ore((mean(tax_di$ejerafgift_dkk_aar) - mean(tax_el$ejerafgift_dkk_aar)) / KM),
+  "/km between diesel and electric - real, but an order of magnitude smaller than ",
+  "the energy gap in section 2, which is why it changes the size of the answer ",
+  "rather than its sign.\n"
+))
+```
+
+### 6.2 What is modelled exactly and what is approximated
+
+The **CO2 table is reproduced in full** from the official brackets, including the diesel "udligningsafgift" column, and it governs every car in the fleet registered from 2022. That is where the new-car decision actually sits, so the part that matters most is the part that is exact.
+
+The **km/l side is a simplification and should be treated as such.** The statute runs four separate scales - petrol and diesel, each split at 3 October 2017 - and this note collapses them to one scale per fuel. Two known gaps:
+
+- Secondary 2026 sources give the most efficient petrol bracket as 330 DKK per half-year while the official scale summary implies 460. The lower figure is used here. It affects only the top bracket, where every electric and hybrid car in the fleet sits, and the two differ by `r fmt_dkk(2 * (460 - 330))` DKK/yr.
+- The "udligningsafgift" is only tabulated against CO2 in the source available, so pre-2021 diesels are charged the surcharge from their **CO2 bracket** rather than from the statutory km/l scale.
+
+Neither moves the conclusions - the whole tax is a few tens of øre per kilometre - but **verify the exact kroner against Motorstyrelsen before quoting them**, and correct `periodic-tax-rates.csv` rather than the code if they differ.
+
+### 6.3 The diesel relief expires
+
+The "udligningsafgift" is currently cut by **30 %**, a temporary measure for 2025-26 that compensates diesel drivers for a 52 øre/l rise in the diesel duty. It falls to a 21 % cut from 2027.
+
+```{r udligning-expiry, results='asis'}
+sc_udl <- sc_c
+sc_udl$udligning_factor <- p(params$udligning_sensitivity)[2]
+after_udl <- cost_per_km(cars, sc_udl, KM, YRS)
+d_after <- after_udl |> filter(fuel == "diesel")
+
+cat(paste0(
+  "Restoring the surcharge to its 2027 level raises the diesel cars' annual tax by ",
+  fmt_dkk(mean(d_after$ejerafgift_dkk_aar) - mean(tax_di$ejerafgift_dkk_aar)),
+  " DKK on average, or ",
+  fmt_ore((mean(d_after$ejerafgift_dkk_aar) - mean(tax_di$ejerafgift_dkk_aar)) / KM),
+  "/km at ", fmt_km(KM), " km. Small on its own - but note the direction of travel: ",
+  "**the pump price and the periodic tax on diesel were deliberately moved in ",
+  "opposite directions, and the offset is being withdrawn from both ends.** ",
+  "Diesel already costs more per litre than petrol (section 2.1); from 2027 it also ",
+  "pays back more of the tax relief that was meant to compensate for it, and road ",
+  "transport enters the EU emissions trading system the same year. Anyone buying a ",
+  "diesel for an eight-year hold is buying into that trajectory, not into today's numbers.\n"
+))
+```
+
+## 7. Fuel type at matched mileage
+
+Section 4 ranked `r nrow(cars)` specific cars. That ranking mixes powertrain with odometer and with price, which is fine for choosing between those `r nrow(cars)` and useless for the general question. This section removes the confounds: a **representative car of each fuel type**, built from the fleet medians for consumption, weight and servicing, evaluated at the **same odometer**, on the price-free running cost defined in section 1.4.
+
+```{r matched-mileage, fig.height=5.4}
+fuels <- c("el", "benzin", "diesel", "phev")
+
+matched <- expand_grid(fuel = fuels, odo = p(params$odo_grid)) |>
+  pmap_dfr(function(fuel, odo) {
+    # Registration year implied by the odometer at a typical Danish usage rate,
+    # so that an older car also falls under the older tax regime. Capped at the
+    # current year for a car with no miles on it.
+    ry <- max(2011, min(2026, 2026 - round(odo / 20000)))
+    car <- representative_car(cars, fuel,
+      price_dkk = 200000, odo_km = odo, reg_year = ry
+    )
+    cost_per_km(car, sc_c, KM, YRS) |>
+      transmute(fuel, odo, running_incl_tax_dkk_km, c_running, tax_dkk_km, reg_year)
+  })
+
+ggplot(matched, aes(odo, running_incl_tax_dkk_km, colour = fuel)) +
+  geom_line(linewidth = 0.95) +
+  geom_point(size = 2) +
+  geom_text_repel(
+    data = matched |> filter(odo == max(odo)),
+    aes(label = lab_fuel[fuel]), hjust = 0, nudge_x = 9000, direction = "y",
+    size = 3.2, seed = 3, segment.colour = "grey75", min.segment.length = 0
+  ) +
+  scale_colour_manual(values = pal_fuel, labels = lab_fuel, breaks = names(pal_fuel)) +
+  scale_x_continuous(
+    labels = label_comma(), breaks = p(params$odo_grid),
+    expand = expansion(mult = c(0.03, 0.26))
+  ) +
+  labs(
+    title = "Price-free running cost, with the odometer held equal",
+    subtitle = paste0(
+      "Energy, tyres, servicing, consumables, repair hazard and \"periodiske afgifter\".\n",
+      "No capital and no depreciation, so the cash price of the car does not enter. ",
+      "At ", fmt_km(KM), " km/yr."
+    ),
+    x = "Odometer at purchase (km)", y = "DKK per km",
+    caption = paste0(
+      "Each line is a car built from the fleet medians for that fuel type, so the only thing ",
+      "differing along a\nvertical slice is the powertrain. Registration year is implied by the ",
+      "odometer, which is what moves\ncars between the two tax regimes."
+    )
+  ) +
+  theme_note() +
+  theme(legend.position = "none")
+```
+
+```{r matched-table}
+matched |>
+  filter(odo %in% p(params$odo_table)) |>
+  transmute(
+    Fuel = lab_fuel[fuel],
+    odo = paste0(fmt_km(odo), " km"),
+    v = paste0(fmt_num(running_incl_tax_dkk_km), " (tax ", fmt_num(tax_dkk_km * 100, 0), "o)")
+  ) |>
+  pivot_wider(names_from = odo, values_from = v) |>
+  show_table(
+    align = "lrrr",
+    caption = "DKK/km price-free running cost, with the periodic tax in oere/km in brackets"
+  )
+```
+
+```{r matched-prose, results='asis'}
+at0 <- matched |> filter(odo == 0)
+atmax <- matched |> filter(odo == max(odo))
+gap0 <- at0$running_incl_tax_dkk_km[at0$fuel != "el"] |> min() -
+  at0$running_incl_tax_dkk_km[at0$fuel == "el"]
+gapmax <- atmax$running_incl_tax_dkk_km[atmax$fuel != "el"] |> min() -
+  atmax$running_incl_tax_dkk_km[atmax$fuel == "el"]
+crosses <- matched |>
+  group_by(odo) |>
+  slice_min(running_incl_tax_dkk_km, n = 1) |>
+  ungroup() |>
+  distinct(fuel) |>
+  pull(fuel)
+
+cat(paste0(
+  "**The ranking does not cross.** Electric is cheapest to run at every odometer on the grid, ",
+  if (length(crosses) == 1) {
+    "and no other fuel type is cheapest anywhere on it"
+  } else {
+    paste0("though the cheapest fuel changes across the range (", paste(lab_fuel[crosses], collapse = ", "), ")")
+  },
+  ". The advantage over the best combustion alternative is ", fmt_ore(gap0),
+  "/km at zero km and ", fmt_ore(gapmax), "/km at ", fmt_km(max(matched$odo)),
+  " km, so it ", if (gapmax > gap0) "widens" else "narrows",
+  " with age rather than reversing.\n\n"
+))
+
+cat(paste0(
+  "This is the cleanest statement the note can make about your actual question. ",
+  "It holds the odometer equal, so it is not an artefact of comparing new electric cars ",
+  "with worn-out diesels; it contains no capital, so it is not an artefact of what the cars ",
+  "cost. **On what it costs to run a car, the powertrain ranking in Denmark in 2026 is ",
+  "stable in the odometer and does not depend on price at all.**\n\n"
+))
+
+cat(paste0(
+  "> **What this deliberately leaves out.** Everything to do with capital: purchase price, ",
+  "depreciation and the return that money would otherwise earn. Those are the larger numbers, ",
+  "they run the other way, and section 8 puts them back. Read this section as *what a ",
+  "kilometre costs*, not as *which car to buy*.\n\n"
+))
+
+cat(paste0(
+  "> **And a caveat on the medians.** With ", nrow(cars),
+  " cars across four powertrains there are only three or four of each, so the median is not ",
+  "a robust central estimate. The petrol median here is ",
+  fmt_num(median(cars$wltp_l_100km[cars$fuel == "benzin"], na.rm = TRUE)),
+  " l/100km, pulled towards the thirsty used all-wheel-drive SUVs and away from the ",
+  cars$name[cars$id == params$ref_petrol], " at ",
+  fmt_num(cars$wltp_l_100km[cars$id == params$ref_petrol]),
+  " - which widens the gap shown above. Section 8.4 uses one *named* car per powertrain ",
+  "instead, which is both the conservative choice and the attributable one.\n"
+))
+```
+
+## 8. Total cost of ownership, and the break-even cash price
+
+Everything so far held the car fixed and asked what a kilometre costs. That question has no trade-off in it, and the electric cars won it outright. This section puts the purchase price back, and the trade-off appears immediately - because a `r fmt_dkk(ev$price_dkk)` DKK car has to earn back roughly `r fmt_dkk(ev$fixed_dkk_aar)` DKK a year in "ejerafgift", insurance, calendar depreciation and foregone return before its cheaper kilometres count for anything, and at `r fmt_km(KM)` km/yr that is `r fmt_num(ev$fixed_dkk_km)` DKK/km of fixed cost against `r fmt_num(ev$marginal_dkk_km)` DKK/km of marginal cost. **The fixed side is the larger number.**
+
+Total cost per kilometre at annual distance `d` is
+
+$$c(d) \;=\; \underbrace{\frac{\text{"ejerafgift"} + \text{insurance} + \text{calendar depreciation} + \text{cost of capital}}{d}}_{\text{falls as } 1/d} \;+\; \underbrace{m(d)}_{\text{roughly flat}}$$
+
+The first term is a hyperbola and the second is nearly a constant, so every car is a curve that falls steeply and then flattens. **The car with the lowest marginal cost wins only in the limit of infinite distance.** At any finite distance the curves cross.
+
+### 8.1 What a year costs regardless of distance
+
+```{r fixed-table}
+res_c |>
+  arrange(fixed_dkk_aar) |>
+  transmute(
+    Car = name,
+    Price = fmt_dkk(price_dkk),
+    `"Ejerafgift"` = fmt_dkk(ejerafgift_dkk_aar),
+    Insurance = fmt_dkk(insurance_dkk_aar),
+    `Calendar dep.` = fmt_dkk(dep_calendar_aar),
+    Capital = fmt_dkk(capital_aar),
+    `Fixed, DKK/yr` = fmt_dkk(fixed_dkk_aar)
+  ) |>
+  show_table(
+    align = "lrrrrrr",
+    caption = paste0("Annual costs that distance does not cause, over a ", YRS, "-year hold")
+  )
+```
+
+### 8.2 The break-even distance between these `r nrow(cars)` cars
+
+```{r total-curves, fig.height=7}
+# Starting at 8,000 rather than lower keeps the 1/d term from stretching the y
+# axis over a region no private owner drives in, which flattens everything else.
+grid_km <- seq(8000, 45000, by = 500)
+curves <- map_dfr(grid_km, \(d) cost_per_km(cars, sc_c, d, YRS) |>
+  transmute(km_aar = d, id, name, fuel, total_dkk_km, marginal_dkk_km))
+
+# Label each car at the right-hand edge, and mark the cheapest car at each
+# distance so the switching points are visible rather than inferred.
+winners <- curves |>
+  group_by(km_aar) |>
+  slice_min(total_dkk_km, n = 1) |>
+  ungroup()
+
+ggplot(curves, aes(km_aar, total_dkk_km, group = name, colour = fuel)) +
+  geom_line(linewidth = 0.65, alpha = 0.75) +
+  geom_line(
+    data = curves |> filter(id == params$ref_ev),
+    linewidth = 1.5
+  ) +
+  geom_point(data = winners, size = 1.5, colour = "black") +
+  geom_text_repel(
+    data = curves |> filter(km_aar == max(grid_km)),
+    aes(label = name), hjust = 0, nudge_x = 1200, direction = "y",
+    size = 2.85, seed = 2, segment.colour = "grey75", min.segment.length = 0,
+    max.overlaps = Inf, box.padding = 0.16, force = 3
+  ) +
+  geom_vline(xintercept = KM, linetype = "22", colour = "grey45") +
+  annotate("text",
+    x = KM, y = max(curves$total_dkk_km) * 0.97, hjust = -0.08,
+    size = 3.1, colour = "grey35", label = paste0("your ", fmt_km(KM), " km/yr")
+  ) +
+  scale_colour_manual(values = pal_fuel, labels = lab_fuel, breaks = names(pal_fuel)) +
+  scale_x_continuous(
+    labels = label_comma(), breaks = seq(10000, 45000, 10000),
+    expand = expansion(mult = c(0.02, 0.42))
+  ) +
+  labs(
+    title = "Total cost per kilometre, and why distance decides",
+    subtitle = paste0(
+      "Marginal cost plus all fixed costs, over an ", YRS, "-year hold. ",
+      "The bZ4X Touring is drawn heavy; black dots\nmark the cheapest car in the fleet at each distance."
+    ),
+    x = "Annual distance (km)", y = "DKK per km, all-in",
+    caption = paste0(
+      "Central setting. ", sum(cars$price_sourced), " of ", nrow(cars),
+      " car prices come from listings or price lists - see section 1.1."
+    )
+  ) +
+  theme_note()
+```
+
+```{r breakeven-table}
+be <- cars |>
+  filter(id != params$ref_ev) |>
+  rowwise() |>
+  mutate(
+    d_star = break_even_km(cars, sc_c, params$ref_ev, id, YRS),
+    gap_at_my_km = res_c$total_dkk_km[res_c$id == params$ref_ev] -
+      res_c$total_dkk_km[res_c$id == id]
+  ) |>
+  ungroup() |>
+  arrange(gap_at_my_km)
+
+be |>
+  transmute(
+    `bZ4X Touring vs` = name,
+    Fuel = lab_fuel[fuel],
+    Price = fmt_dkk(price_dkk),
+    `Gap at ${KM} km/yr` = paste0(
+      if_else(gap_at_my_km < 0, "bZ4X cheaper by ", "bZ4X dearer by "),
+      fmt_ore(abs(gap_at_my_km)), "/km"
+    ),
+    `Break-even distance` = if_else(
+      is.na(d_star), "never crosses",
+      paste0(fmt_km(d_star), " km/yr")
+    )
+  ) |>
+  rename_with(\(x) str_replace(x, fixed("${KM}"), fmt_km(KM))) |>
+  show_table(align = "llrrr")
+```
+
+```{r breakeven-prose, results='asis'}
+crosses <- be |> filter(!is.na(d_star))
+never <- be |> filter(is.na(d_star))
+
+cat(paste0(
+  "At ", fmt_km(KM), " km/yr the bZ4X Touring is cheaper all-in than ",
+  sum(be$gap_at_my_km < 0), " of the ", nrow(be), " comparators and dearer than ",
+  sum(be$gap_at_my_km > 0), ". "
+))
+
+if (nrow(crosses) > 0) {
+  cat(paste0(
+    "Against ", nrow(crosses), " of them there is a genuine break-even distance, ",
+    "ranging from ", fmt_km(min(crosses$d_star)), " to ", fmt_km(max(crosses$d_star)),
+    " km/yr: drive more than that and the bZ4X's cheaper kilometres have paid for its price. "
+  ))
+}
+if (nrow(never) > 0) {
+  cat(paste0(
+    "Against the remaining ", nrow(never),
+    " the curves never cross inside 2,000 to 80,000 km/yr - one car simply dominates ",
+    "the other at every distance a private owner would drive, and no amount of driving fixes it."
+  ))
+}
+cat("\n\n")
+
+cheapest_total <- res_c |> slice_min(total_dkk_km, n = 1)
+
+cat(paste0(
+  "**Holding the car fixed, the cheapest fuel wins and there is nothing to weigh** - ",
+  "the electric cars took the top ", n_lead_el, " places in section 4. Allowing the car to ",
+  "vary across a ", fmt_dkk(min(cars$price_dkk)), " to ", fmt_dkk(max(cars$price_dkk)),
+  " DKK range turns it into a capital-versus-running-cost problem, and the cheapest car ",
+  "all-in at ", fmt_km(KM), " km/yr becomes the **", cheapest_total$name, "** at ",
+  fmt_num(cheapest_total$total_dkk_km), " DKK/km",
+  if (cheapest_total$id == params$ref_ev) {
+    " - which is the bZ4X itself, so on these numbers the two questions happen to agree"
+  } else {
+    paste0(
+      ", against ", fmt_num(ev$total_dkk_km), " for the bZ4X. The question stops being ",
+      "*which fuel is cheapest* and becomes *how far do I drive, and is that far enough ",
+      "to amortise the price difference*"
+    )
+  }, ".\n"
+))
+```
+
+### 8.3 Average annual cost over `r YRS` years, by fuel type
+
+The break-even distances above still compare `r nrow(cars)` particular cars. Applying the section 7 device - a representative car per fuel type, all at the same odometer - and sweeping the cash price turns the comparison into the one a buyer actually faces: *what may this car cost, given what it will cost to run?*
+
+```{r tco-price-sweep, fig.height=5.6}
+price_grid <- seq(50000, 520000, by = 5000)
+
+sweep_price <- expand_grid(
+  fuel = fuels, odo = p(params$price_panel_odo), price = price_grid
+) |>
+  pmap_dfr(function(fuel, odo, price) {
+    ry <- max(2011, min(2026, 2026 - round(odo / 20000)))
+    car <- representative_car(cars, fuel,
+      price_dkk = price, odo_km = odo, reg_year = ry,
+      spec_from = if (fuel == "el") params$ref_ev else unname(spec_car[fuel])
+    )
+    cost_per_km(car, sc_c, KM, YRS) |>
+      transmute(fuel, odo, price, total_dkk_aar)
+  }) |>
+  mutate(panel = paste0("Bought at ", fmt_km(odo), " km"))
+
+panel_levels <- paste0("Bought at ", fmt_km(p(params$price_panel_odo)), " km")
+
+ggplot(
+  sweep_price |> mutate(panel = factor(panel, levels = panel_levels)),
+  aes(price, total_dkk_aar, colour = fuel)
+) +
+  geom_line(linewidth = 0.85) +
+  geom_point(
+    data = tibble(
+      panel = factor(panel_levels[1], levels = panel_levels),
+      price = ev$price_dkk, total_dkk_aar = ev$total_dkk_aar, fuel = "el"
+    ),
+    size = 3, shape = 21, fill = "white", stroke = 1.1
+  ) +
+  scale_colour_manual(values = pal_fuel, labels = lab_fuel, breaks = names(pal_fuel)) +
+  scale_x_continuous(labels = label_number(scale = 1e-3, suffix = "k")) +
+  scale_y_continuous(labels = label_number(scale = 1e-3, suffix = "k")) +
+  facet_wrap(~panel) +
+  labs(
+    title = "Total annual cost against cash price, by powertrain",
+    subtitle = paste0(
+      "Everything included: energy, tyres, service, consumables, repair hazard, periodiske\n",
+      "afgifter, insurance, depreciation and the cost of the capital. ",
+      fmt_km(KM), " km/yr over ", YRS, " years.\nThe open circle is the actual bZ4X Touring."
+    ),
+    x = "Cash price (DKK thousand)", y = "Total cost (DKK thousand per year)",
+    caption = paste0(
+      "Each line is one named car per powertrain - the reference cars in section 1.1 - with only its ",
+      "price varying.\nThat is a ceteris paribus device: in the real market a cheaper car is usually ",
+      "also a thirstier one."
+    )
+  ) +
+  theme_note()
+```
+
+The lines are close to parallel, and that is the substantive point. The **slope** is what a krone of purchase price costs per year - depreciation plus foregone return, around `r fmt_pct((sweep_price$total_dkk_aar[sweep_price$fuel == "el" & sweep_price$odo == 0 & sweep_price$price == 400000] - sweep_price$total_dkk_aar[sweep_price$fuel == "el" & sweep_price$odo == 0 & sweep_price$price == 200000]) / 200000, 1)` a year for an electric car - and it barely differs between powertrains. The **vertical gaps between the lines** are the running-cost differences from section 7. Dividing one by the other gives the number the decision turns on.
+
+### 8.4 The break-even cash price
+
+> **How much may an electric car cost and still be no more expensive to own than a combustion one?**
+
+```{r break-even-price-table}
+be_price <- expand_grid(fuel = setdiff(fuels, "el"), odo = p(params$price_panel_odo)) |>
+  pmap_dfr(function(fuel, odo) {
+    ry <- max(2011, min(2026, 2026 - round(odo / 20000)))
+    # The electric side is anchored at the reference car's price and specs; the
+    # comparator's price is what gets solved for.
+    ev_car <- representative_car(cars, "el",
+      price_dkk = ev$price_dkk, odo_km = odo, reg_year = ry,
+      spec_from = params$ref_ev
+    )
+    target <- cost_per_km(ev_car, sc_c, KM, YRS)$total_dkk_aar
+    comp <- representative_car(cars, fuel,
+      price_dkk = 200000, odo_km = odo, reg_year = ry,
+      spec_from = unname(spec_car[fuel])
+    )
+    tibble(
+      fuel = fuel, odo = odo, target = target,
+      p_star = break_even_price(target, comp, sc_c, KM, YRS)
+    )
+  })
+
+be_price |>
+  transmute(
+    Fuel = lab_fuel[fuel],
+    odo = paste0("At ", fmt_km(odo), " km"),
+    v = if_else(is.na(p_star), "no crossing", fmt_dkk(p_star))
+  ) |>
+  pivot_wider(names_from = odo, values_from = v) |>
+  show_table(
+    align = "lrrr",
+    caption = paste0(
+      "Cash price at which a combustion car matches an electric one bought for ",
+      fmt_dkk(ev$price_dkk), " DKK, on total annual cost"
+    )
+  )
+```
+
+```{r break-even-price-prose, results='asis'}
+b0 <- be_price |> filter(odo == 0, !is.na(p_star))
+
+if (nrow(b0) == 0) {
+  cat(paste0(
+    "At zero kilometres no combustion price inside the search bracket equalises the two, ",
+    "which means the electric car's running-cost advantage cannot be bought back at any ",
+    "purchase price a private buyer would pay.\n"
+  ))
+} else {
+  # Petrol is the mainstream comparator, so it anchors the headline; the plug-in
+  # hybrid gives the tightest bound and is reported as the conservative case.
+  pe_row <- b0 |> filter(fuel == "benzin")
+  tightest <- b0 |> slice_max(p_star, n = 1)
+
+  cat(paste0(
+    "**A new electric car bought for ", fmt_dkk(ev$price_dkk),
+    " DKK costs the same per year to own as a petrol car bought for ",
+    fmt_dkk(pe_row$p_star), " DKK.** The electric car may therefore cost **",
+    fmt_dkk(ev$price_dkk - pe_row$p_star), " DKK more** at the till and still break even ",
+    "over ", YRS, " years at ", fmt_km(KM), " km. Against the other powertrains the ",
+    "allowance is ",
+    paste0(
+      b0 |> filter(fuel != "benzin") |>
+        mutate(s = paste0(fmt_dkk(ev$price_dkk - p_star), " DKK vs ", tolower(lab_fuel[fuel]))) |>
+        pull(s),
+      collapse = " and "
+    ), ".\n\n"
+  ))
+
+  cat(paste0(
+    "Read the other way it is a rule of thumb worth carrying into a showroom: at ",
+    fmt_km(KM), " km/yr an electric car is worth **",
+    fmt_dkk(round((ev$price_dkk - pe_row$p_star) / 10000) * 10000),
+    " DKK more than an equivalent petrol car**, and at least **",
+    fmt_dkk(round((ev$price_dkk - tightest$p_star) / 10000) * 10000),
+    " DKK more** than the closest-run alternative in the fleet, the ",
+    tolower(lab_fuel[tightest$fuel]), ". Below that premium it wins on total cost; ",
+    "above it, the cheaper kilometres do not repay the capital.\n\n"
+  ))
+
+  # The break-even price is only meaningful if a car can actually be bought for
+  # it. When it falls below the whole new-car market, the finding is stronger
+  # than a premium: it is a dominance result.
+  new_ice <- cars |> filter(condition == "ny", fuel %in% c("benzin", "diesel"))
+  if (nrow(new_ice) > 0 && pe_row$p_star < min(new_ice$price_dkk)) {
+    cat(paste0(
+      "**", fmt_dkk(pe_row$p_star),
+      " DKK is below the cheapest new combustion car in the fleet** (",
+      new_ice$name[which.min(new_ice$price_dkk)], " at ",
+      fmt_dkk(min(new_ice$price_dkk)), " DKK), and well below anything of this size ",
+      "on sale. So at ", fmt_km(KM), " km/yr the comparison against *new* combustion ",
+      "cars is not a premium at all - it is a dominance result: no new petrol or diesel ",
+      "wagon in this class can be bought cheaply enough to match the electric car on ",
+      "total cost. The real competition is the used market, which is what the ",
+      fmt_km(100000), " and ", fmt_km(200000), " km columns above are for.\n\n"
+    ))
+  }
+}
+
+# Sensitivity of the premium to annual distance: the one variable the buyer controls.
+prem_by_km <- map_dfr(c(10000, 15000, 20000, 30000, 40000), function(d) {
+  ev_car <- representative_car(cars, "el",
+    price_dkk = ev$price_dkk, odo_km = 0, reg_year = 2026, spec_from = params$ref_ev
+  )
+  target <- cost_per_km(ev_car, sc_c, d, YRS)$total_dkk_aar
+  comp <- representative_car(cars, "benzin",
+    price_dkk = 200000, odo_km = 0, reg_year = 2026, spec_from = params$ref_petrol
+  )
+  tibble(km = d, p_star = break_even_price(target, comp, sc_c, d, YRS))
+}) |>
+  mutate(premium = ev$price_dkk - p_star)
+
+cat("The premium is not a constant - it scales with how far you drive, because that is what turns a per-kilometre advantage into kroner:\n\n")
+```
+
+```{r premium-by-distance}
+prem_by_km |>
+  transmute(
+    `Annual distance` = paste0(fmt_km(km), " km"),
+    `Break-even petrol price` = if_else(is.na(p_star),
+      "none exists", fmt_dkk(p_star)
+    ),
+    `Electric premium justified` = if_else(is.na(premium),
+      "any price wins", fmt_dkk(premium)
+    )
+  ) |>
+  show_table(align = "lrr")
+```
+
+```{r premium-nocross, results='asis'}
+nocross <- prem_by_km |> filter(is.na(p_star))
+if (nrow(nocross) > 0) {
+  cat(paste0(
+    "The rows marked *none exists* are not a failure of the solver. Above about ",
+    fmt_km(min(nocross$km)), " km/yr the electric car is cheaper per year than a petrol ",
+    "car at **any** purchase price down to the ", fmt_dkk(20000),
+    " DKK floor of the search - the running-cost gap over ", YRS,
+    " years exceeds the entire value of a cheap petrol car, so no discount closes it.\n"
+  ))
+}
+```
+
+```{r premium-caveat, results='asis'}
+cat(paste0(
+  "> **Three caveats before using this number.** The comparator is the ",
+  cars$name[cars$id == params$ref_petrol], " at its published ",
+  fmt_num(cars$wltp_l_100km[cars$id == params$ref_petrol]),
+  " l/100km, with only its price varying. That is the most efficient all-wheel-drive petrol ",
+  "car in the fleet, so this is the conservative comparison - against any of the AWD petrol ",
+  "SUVs at 8 to 9 l/100km the justified premium would be substantially larger. The prices ",
+  "behind the comparators are placeholders for every car except ",
+  knitr::combine_words(cars$name[cars$price_sourced]), ". And roughly ",
+  fmt_pct((pe$c_dep_km - ev$c_dep_km) / (pe$marginal_dkk_km - ev$marginal_dkk_km)),
+  " of the per-kilometre gap rests on the electric depreciation elasticity from section 5.4, ",
+  "whose sign depends on the regression controls - section 9.2 shows what halving it does.\n"
+))
+```
+
+## 9. Sensitivity
+
+### 9.1 Both prices at once
+
+```{r heatmap, fig.height=5.4}
+pet_grid <- seq(12, 24, length.out = 80)
+# The electricity axis runs past the top of the ad-hoc DC range on purpose: the
+# break-even sits above every price actually charged in Denmark, and a grid that
+# stopped at the market price would hide the contour rather than show it.
+el_grid <- seq(0.5, 9.0, length.out = 80)
+
+# Energy cost per km only: the other components do not move with these two
+# prices, so including them would just add a constant and shift the contour.
+hm <- expand_grid(petrol = pet_grid, el = el_grid) |>
+  mutate(
+    ev_energy = ev$use_wh_km / 1000 * el,
+    pe_energy = pe$use_l_100 / 100 * petrol,
+    # Constant offset from everything that is not energy, so the zero contour
+    # is the total marginal break-even and not just the energy break-even.
+    other = (ev$marginal_dkk_km - ev$c_energy) - (pe$marginal_dkk_km - pe$c_energy),
+    diff = ev_energy - pe_energy + other
+  )
+
+ggplot(hm, aes(petrol, el)) +
+  geom_raster(aes(fill = diff), interpolate = TRUE) +
+  geom_contour(aes(z = diff), breaks = 0, colour = "black", linewidth = 0.8) +
+  # The dearest electricity actually on sale in Denmark. Everything below this
+  # line is a price a driver can face; everything above it is hypothetical.
+  geom_hline(
+    yintercept = tier_price$high[["dc_adhoc"]],
+    linetype = "22", colour = "grey20", linewidth = 0.6
+  ) +
+  annotate("text",
+    x = min(pet_grid), y = tier_price$high[["dc_adhoc"]], hjust = -0.03, vjust = -0.6,
+    size = 3, colour = "grey20",
+    label = "dearest ad-hoc DC charging on sale in DK"
+  ) +
+  geom_point(
+    x = sc_c$petrol_dkk_l, y = sc_c$el_dkk_kwh,
+    size = 3, shape = 21, fill = "white", stroke = 1.1
+  ) +
+  annotate("text",
+    x = sc_c$petrol_dkk_l, y = sc_c$el_dkk_kwh, hjust = -0.18, vjust = -0.6,
+    size = 3.2, label = "today, your profile"
+  ) +
+  scale_fill_gradient2(
+    low = pal_fuel[["el"]], mid = "grey96", high = pal_fuel[["benzin"]],
+    midpoint = 0, labels = label_number(accuracy = 0.5)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(
+    title = "The bZ4X Touring against the new petrol wagon, on marginal cost",
+    subtitle = paste0(
+      "Blue: the bZ4X is cheaper per km. Orange: the ", pe$name,
+      " is. The black line is the\nbreak-even, including tyres, service, consumables ",
+      "and depreciation, not just energy."
+    ),
+    x = "Petrol, DKK per litre", y = "Blended electricity, DKK per kWh",
+    fill = "DKK/km"
+  ) +
+  theme_note() +
+  theme(legend.position = "right", legend.title = element_text(colour = "grey30"))
+```
+
+```{r heatmap-prose, results='asis'}
+at_today <- hm |>
+  filter(abs(petrol - sc_c$petrol_dkk_l) == min(abs(petrol - sc_c$petrol_dkk_l)))
+crossing <- at_today |>
+  filter(diff >= 0) |>
+  slice_min(el, n = 1)
+
+cat(paste0(
+  "The break-even line is nearly flat, and it sits high. At today's petrol price of ",
+  fmt_num(sc_c$petrol_dkk_l), " DKK/l, electricity would have to reach ",
+  if (nrow(crossing) == 0) {
+    paste0("more than ", fmt_num(max(el_grid)), " DKK/kWh - beyond the top of the grid")
+  } else {
+    paste0(fmt_num(crossing$el[1]), " DKK/kWh")
+  },
+  " before the bZ4X's total marginal cost exceeded the petrol wagon's. The dearest ",
+  "electricity a Danish driver can realistically buy is ad-hoc DC at ",
+  fmt_num(tier_price$high[["dc_adhoc"]]), " DKK/kWh, and the flatness of the contour ",
+  "says why the margin is so wide: the two cars differ by ",
+  fmt_ore(abs((ev$marginal_dkk_km - ev$c_energy) - (pe$marginal_dkk_km - pe$c_energy))),
+  "/km on everything that is not energy, and that difference already favours the ",
+  "electric car before a single kilowatt-hour is priced.\n"
+))
+```
+
+### 9.2 The depreciation elasticities
+
+Section 5.4 showed the electric elasticity flipping sign under a change of controls. Scaling all three by a common factor puts a bound on what that fragility can do.
+
+```{r elast-sens}
+map_dfr(p(params$e_km_scale_sensitivity), function(s) {
+  sc <- sc_c
+  sc$e_km_scale <- s
+  cost_per_km(cars, sc, KM, YRS) |> mutate(scale = s)
+}) |>
+  filter(id %in% c(params$ref_ev, params$ref_petrol, params$ref_diesel, best_marg$id)) |>
+  transmute(scale = paste0("x ", fmt_num(scale, 1)), name, v = fmt_num(marginal_dkk_km)) |>
+  pivot_wider(names_from = scale, values_from = v) |>
+  rename(Car = name) |>
+  show_table(align = "lrrr")
+```
+
+### 9.3 When the "elafgift" cut expires
+
+The 2026-27 electricity tax cut is temporary. If the rate returns to its 2025 level of 90 oere/kWh before VAT, home charging rises by about `r fmt_num(0.90 * 1.25)` DKK/kWh.
+
+```{r elafgift-expiry, results='asis'}
+restore <- 0.90 * 1.25 # 2025 rate plus VAT
+mix_home <- my_mix
+# Only the two home tiers carry the household elafgift; public charge point
+# operators are on a different (refunded) footing, so their prices move less.
+tiers_after <- tier_price$central
+tiers_after[["home_night"]] <- tiers_after[["home_night"]] + restore
+tiers_after[["home_avg"]] <- tiers_after[["home_avg"]] + restore
+
+sc_after <- sc_c
+sc_after$el_dkk_kwh <- blend_el(mix_home, tiers_after)
+after <- cost_per_km(cars, sc_after, KM, YRS)
+ev_after <- after$marginal_dkk_km[after$id == params$ref_ev]
+
+cat(paste0(
+  "On your profile the blended price would go from ", fmt_num(sc_c$el_dkk_kwh),
+  " to ", fmt_num(sc_after$el_dkk_kwh), " DKK/kWh, and the bZ4X's marginal cost from ",
+  fmt_num(ev$marginal_dkk_km), " to ", fmt_num(ev_after), " DKK/km - a rise of ",
+  fmt_ore(ev_after - ev$marginal_dkk_km), "/km, or ",
+  fmt_dkk((ev_after - ev$marginal_dkk_km) * KM), " DKK a year at ", fmt_km(KM), " km. ",
+  "The electric car is ",
+  if (ev_after < pe$marginal_dkk_km) {
+    paste0(
+      "still cheaper per kilometre than the ", pe$name, ", by ",
+      fmt_ore(pe$marginal_dkk_km - ev_after), "/km. The cut is worth having but the ",
+      "conclusion does not depend on it."
+    )
+  } else {
+    paste0(
+      "then more expensive per kilometre than the ", pe$name, ", by ",
+      fmt_ore(ev_after - pe$marginal_dkk_km), "/km. The 2026 conclusion depends on a ",
+      "temporary tax measure, which is worth knowing before signing an eight-year plan."
+    )
+  }, "\n"
+))
+```
+
+### 9.4 How far would petrol have to fall?
+
+Section 2.4 widened the fuel bands because today's prices are near records and an eight-year hold is exposed to them coming back down. This section asks what that would actually do, by moving the pump price alone and leaving electricity where it is - the decorrelated case the bands cannot show.
+
+```{r petrol-fall, fig.height=5}
+fall_grid <- seq(9, 24, by = 0.25)
+
+fall <- map_dfr(fall_grid, function(pp) {
+  sc <- sc_c
+  sc$petrol_dkk_l <- pp
+  sc$diesel_dkk_l <- pp + (sc_c$diesel_dkk_l - sc_c$petrol_dkk_l)
+
+  ev_car <- representative_car(cars, "el",
+    price_dkk = ev$price_dkk, odo_km = 0, reg_year = 2026, spec_from = params$ref_ev
+  )
+  target <- cost_per_km(ev_car, sc, KM, YRS)$total_dkk_aar
+  comp <- representative_car(cars, "benzin",
+    price_dkk = 200000, odo_km = 0, reg_year = 2026, spec_from = params$ref_petrol
+  )
+
+  x <- cost_per_km(cars, sc, KM, YRS)
+  tibble(
+    petrol = pp,
+    marg_gap = x$marginal_dkk_km[x$id == params$ref_petrol] -
+      x$marginal_dkk_km[x$id == params$ref_ev],
+    premium = ev$price_dkk - break_even_price(target, comp, sc, KM, YRS)
+  )
+})
+
+hist_band <- range(price_hist$dkk[price_hist$series == "petrol" & price_hist$basis == "street"])
+
+ggplot(fall, aes(petrol, premium)) +
+  annotate("rect",
+    xmin = hist_band[1], xmax = hist_band[2], ymin = -Inf, ymax = Inf,
+    fill = "grey85", alpha = 0.6
+  ) +
+  annotate("text",
+    x = mean(hist_band), y = max(fall$premium, na.rm = TRUE), vjust = 1.4,
+    size = 3.1, colour = "grey35", label = "petrol's 2020-2026 range"
+  ) +
+  geom_line(linewidth = 1, colour = pal_fuel[["el"]]) +
+  geom_vline(xintercept = sc_c$petrol_dkk_l, linetype = "22", colour = "grey40") +
+  annotate("text",
+    x = sc_c$petrol_dkk_l, y = min(fall$premium, na.rm = TRUE), hjust = -0.07,
+    vjust = -0.6, size = 3.1, colour = "grey30", label = "today"
+  ) +
+  scale_y_continuous(labels = label_number(scale = 1e-3, suffix = "k")) +
+  labs(
+    title = "The justified electric premium, as a function of the petrol price",
+    subtitle = paste0(
+      "How much more an electric car may cost than an equivalent petrol one and still break even\n",
+      "over ", YRS, " years at ", fmt_km(KM),
+      " km/yr. Electricity is held at today's blended ", fmt_num(sc_c$el_dkk_kwh), " DKK/kWh."
+    ),
+    x = "Petrol, DKK per litre", y = "Electric premium justified (DKK thousand)",
+    caption = "Diesel is moved with petrol, keeping today's spread between them. Central setting otherwise."
+  ) +
+  theme_note()
+```
+
+```{r petrol-fall-prose, results='asis'}
+at_low <- fall |> filter(abs(petrol - p(params$petrol_dkk_l)[1]) == min(abs(petrol - p(params$petrol_dkk_l)[1])))
+at_hi <- fall |> filter(abs(petrol - p(params$petrol_dkk_l)[3]) == min(abs(petrol - p(params$petrol_dkk_l)[3])))
+at_now <- fall |> filter(abs(petrol - sc_c$petrol_dkk_l) == min(abs(petrol - sc_c$petrol_dkk_l)))
+
+zero_marg <- fall |> filter(marg_gap <= 0)
+zero_prem <- fall |> filter(premium <= 0)
+
+cat(paste0(
+  "**The premium is roughly linear in the pump price, and the exposure is material.** ",
+  "At today's ", fmt_num(sc_c$petrol_dkk_l), " DKK/l an electric car is worth ",
+  fmt_dkk(at_now$premium[1]), " DKK more; at the bottom of the band (",
+  fmt_num(p(params$petrol_dkk_l)[1]), " DKK/l, roughly the 2024-25 level) it is worth ",
+  fmt_dkk(at_low$premium[1]), " DKK, and at the top (",
+  fmt_num(p(params$petrol_dkk_l)[3]), " DKK/l) ", fmt_dkk(at_hi$premium[1]), " DKK. ",
+  "So the fuel-price question moves the answer by about ",
+  fmt_dkk(at_hi$premium[1] - at_low$premium[1]),
+  " DKK across the credible range - which is the right order of magnitude to care about ",
+  "when the car itself costs ", fmt_dkk(ev$price_dkk), " DKK.\n\n"
+))
+
+cat(paste0(
+  "**But the sign does not change anywhere on the grid.** ",
+  if (nrow(zero_marg) == 0) {
+    paste0(
+      "Down to ", fmt_num(min(fall_grid)),
+      " DKK/l - below any Danish pump price this century - the petrol car still costs more per ",
+      "kilometre to run than the bZ4X, and the justified premium stays positive throughout. "
+    )
+  } else {
+    paste0(
+      "The marginal ranking reverses only below ", fmt_num(max(zero_marg$petrol)),
+      " DKK/l. "
+    )
+  },
+  "That is the reassuring half of the answer: **a fall in fuel prices changes how much the ",
+  "electric car is worth paying for, not whether it is worth paying more.**\n\n"
+))
+
+cat(paste0(
+  "> **The reason is structural rather than lucky.** Roughly half of a litre's pump price ",
+  "in Denmark is duty and VAT - the VAT alone is a fifth of it - and the duty component is on a ",
+  "legislated upward path - the CO2 rate rose in 2025, diesel's now exceeds petrol's, and ",
+  "ETS2 arrives in 2027. A collapse in crude moves only the part of the price that is not tax, ",
+  "so even a halving of the oil price does not halve what you pay at the pump. ",
+  "The electricity side has the mirror-image asymmetry: its tax was cut to the EU minimum ",
+  "for 2026-27 and can only go back up, which is what section 9.3 prices. Neither of those ",
+  "is a forecast, but they do mean the two bands are not symmetric bets.\n"
+))
+```
+
+### 9.5 What is deliberately not modelled
+
+Charging time and the value of it; the convenience of a five-minute fill against a thirty-minute stop, in both directions. Battery degradation as a per-kilometre cost and the warranty that covers it - that is a whole question of its own and it is answered in `battery-warranty/warranty-analysis.Rmd`. Company-car taxation, which changes the arithmetic completely for anyone on **"fri bil"**. Registration tax changes on future purchases. Road tolls and bridge fees. Anything to do with emissions other than through the taxes already priced in.
+
+## 10. Verdict
+
+```{r verdict, results='asis'}
+cat(paste0(
+  "**On the narrow question - what a kilometre costs, holding distance equal - ",
+  "electricity wins outright.** It takes the energy contest by a ",
+  "factor of ", fmt_num(en_pe / en_ev, 1), " and keeps essentially all of it: the tyre ",
+  "penalty from carrying ", fmt_km(ev$kerb_kg - pe$kerb_kg), " kg more is cancelled by ",
+  "cheaper consumables and servicing. The bZ4X Touring's marginal cost is ",
+  fmt_num(ev$marginal_dkk_km), " DKK/km against ", fmt_num(pe$marginal_dkk_km),
+  " for a new petrol wagon and ", fmt_num(di$marginal_dkk_km),
+  " for a used diesel, and no setting of the energy prices reverses that. There is no ",
+  "trade-off to weigh at this level.\n\n"
+))
+
+cat(paste0(
+  "**Holding the odometer equal rather than the car confirms it.** A representative ",
+  "electric car is cheaper to run than the best combustion alternative at every odometer ",
+  "from 0 to ", fmt_km(max(matched$odo)), " km, by ", fmt_ore(gap0), " to ",
+  fmt_ore(gapmax), "/km, and the gap widens with age rather than closing. That comparison ",
+  "contains no capital, so it cannot be an artefact of what the cars cost, and it holds ",
+  "mileage constant, so it cannot be an artefact of comparing new electric cars with ",
+  "worn-out diesels. The \"periodiske afgifter\" add ", fmt_ore(
+    (mean(tax_di$ejerafgift_dkk_aar) - mean(tax_el$ejerafgift_dkk_aar)) / KM
+  ), "/km to that gap against diesel, and are being tightened further from 2027.\n\n"
+))
+
+cat(paste0(
+  "**That holds only with the car held fixed.** Across ",
+  fmt_dkk(min(cars$price_dkk)), " to ", fmt_dkk(max(cars$price_dkk)),
+  " DKK the marginal ranking and the total ranking are different rankings: the bZ4X ",
+  "carries ", fmt_num(ev$fixed_dkk_km), " DKK/km of fixed cost at ", fmt_km(KM),
+  " km/yr, more than its entire marginal cost, and the cheapest car all-in is the **",
+  cheapest_total$name, "**. The decision variable stops being the fuel and becomes the ",
+  "annual distance.\n\n"
+))
+
+cat(paste0(
+  "**The number to take away is the break-even cash price.** At ", fmt_km(KM),
+  " km/yr over ", YRS, " years an electric car is worth about **",
+  fmt_dkk(round((ev$price_dkk - be_price$p_star[be_price$fuel == "benzin" & be_price$odo == 0]) / 10000) * 10000),
+  " DKK more than an equivalent petrol car** and still breaks even, rising to roughly ",
+  fmt_dkk(round(prem_by_km$premium[prem_by_km$km == 30000] / 10000) * 10000),
+  " DKK at 30,000 km/yr. That is the form the answer takes once mileage and price are ",
+  "both in play: not a fuel, but a price you are allowed to pay.\n\n"
+))
+
+cat(paste0(
+  "**Three things would change the answer, in descending order of how much:** ",
+  "the prices in `fuel-cost-cars.csv`, which drive section 8 entirely",
+  if (any(!cars$price_sourced)) {
+    paste0(
+      " and which remain placeholders for ", sum(!cars$price_sourced), " of ",
+      nrow(cars), " cars"
+    )
+  } else {
+    ""
+  },
+  "; the repair-hazard slope, ",
+  "which decides whether the cheap end of the fleet is a bargain or a trap; and the ",
+  "electric depreciation elasticity, whose sign depends on the regression controls. ",
+  "None of the three is a fuel price.\n\n"
+))
+
+```
+
+---
+
+```{r provenance, results='asis'}
+cat(paste0(
+  "*Generated ", format(Sys.Date(), "%d %B %Y"), " from `fuel-cost-per-km.Rmd`. ",
+  "Cost model in `R/fuel_model.R`; car list in `fuel-cost-cars.csv`; depreciation ",
+  "elasticities in `mileage_elasticity.csv`, regenerated by ",
+  "`Rscript \"fuel-cost/mileage_elasticity.R\"` from the repository root against ",
+  "`depreciation/bilbasen_data.csv` (", fmt_dkk(sum(elast$n)), " listings).*\n"
+))
+```

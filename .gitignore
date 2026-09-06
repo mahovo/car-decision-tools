@@ -1,0 +1,37 @@
+# macOS / iCloud
+.DS_Store
+.icloud
+
+# Python environment (depreciation/scrape_bilbasen.py)
+.venv/
+__pycache__/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+Rplots.pdf
+
+# knitr intermediates
+*_files/
+*_cache/
+*.knit.md
+*.utf8.md
+
+# Claude Code: session data and git worktrees
+.claude/
+
+# Superseded drafts kept locally
+*_backup/
+
+# ---------------------------------------------------------------------------
+# NOT FOR PUBLICATION. The raw bilbasen.dk scrape is a bulk extract of a
+# protected database and must stay out of this repository; only the derived
+# statistics are published. See NOTICE and depreciation/README.md.
+# ---------------------------------------------------------------------------
+depreciation/bilbasen_data.csv
+bilbasen_data.csv
+
+# Service quotes and any other document carrying a registration number or VIN
+depreciation_curves.pdf
+*.pdf
