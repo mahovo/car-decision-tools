@@ -1805,7 +1805,7 @@ The lines are close to parallel, and that is the substantive point. The **slope*
 
 ### 8.4 The break-even cash price
 
-> **How much may an electric car cost and still be no more expensive to own than a combustion one?**
+> **How cheap would a combustion car have to be to cost the same to own as an electric one?**
 
 ```{r break-even-price-table}
 be_price <- expand_grid(fuel = setdiff(fuels, "el"), odo = p(params$price_panel_odo)) |>
