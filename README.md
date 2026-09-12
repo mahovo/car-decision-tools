@@ -35,9 +35,10 @@ Three of the modules have their own README going into the method:
 battery-warranty/     warranty valuation — analytic core in R/model.R
 fuel-cost/            cost per km — model in R/fuel_model.R, fleet in fuel-cost-cars.csv
 depreciation/         bilbasen scraper (Python/Playwright) + depreciation analysis
-docs/                 the rendered notes; this is what GitHub Pages serves
+docs/                 site shell (index.html) and the one render CI cannot rebuild
 *.Rmd (root)          the notes that share depreciation_by_fueltype.csv
 build.R               renders every note into docs/
+tools/                check-publishable.sh, the gate in front of every publish
 ```
 
 Root-level notes sit at the root deliberately: they read
@@ -54,14 +55,42 @@ Needs R (tested on 4.5.2) with `rmarkdown`, `knitr`, `kableExtra`, `tidyverse`,
 Rscript build.R
 ```
 
-Or one at a time:
+Or only the notes whose path matches:
 
 ```bash
-Rscript -e 'rmarkdown::render("fuel-cost/fuel-cost-per-km.Rmd")'
+Rscript build.R fuel-cost
 ```
 
-The scraper additionally needs Python with `playwright` (and
-`playwright install chromium`).
+Output lands in `docs/` for local preview. The scraper additionally needs Python
+with `playwright` (and `playwright install chromium`).
+
+## Publishing
+
+**Push to `main`; the site updates itself.** The
+[workflow](.github/workflows/deploy-site.yml) renders every note on a clean
+Ubuntu runner and deploys `docs/` to GitHub Pages, typically within ten minutes.
+Rendered HTML is not committed — CI is the only thing that builds the site.
+
+Two things to know:
+
+- **If anything fails, nothing is deployed.** A note that will not render, or a
+  failed publishability check, leaves the site at its last good version. Check
+  the *Actions* tab when a change does not appear.
+- **`depreciation/analyze_depreciation.Rmd` is the exception.** CI cannot
+  rebuild it (the raw scrape is not in the repository) and says so as a
+  warning on every run. To change that note, re-scrape locally, run
+  `Rscript build.R depreciation`, and commit `docs/depreciation-by-brand.html`.
+
+Figures rendered in CI use Linux fonts, so charts on the site will not be
+pixel-identical to a local render on macOS.
+
+`tools/check-publishable.sh` runs in CI before and after rendering, and should
+also run as a local pre-push hook, which stops the push itself rather than only
+the deploy:
+
+```bash
+printf '#!/bin/sh\nexec tools/check-publishable.sh $(git rev-list HEAD --not --remotes)\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+```
 
 ## Data availability
 

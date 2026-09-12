@@ -24,6 +24,13 @@ Rplots.pdf
 # Superseded drafts kept locally
 *_backup/
 
+# Rendered notes are build output: CI renders them on every push to main.
+# Exception: depreciation-by-brand.html cannot be rebuilt without the raw
+# scrape (see below), so its render is committed and deployed as-is.
+docs/*.html
+!docs/index.html
+!docs/depreciation-by-brand.html
+
 # ---------------------------------------------------------------------------
 # NOT FOR PUBLICATION. The raw bilbasen.dk scrape is a bulk extract of a
 # protected database and must stay out of this repository; only the derived

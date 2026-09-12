@@ -28,6 +28,8 @@ NOTES <- list(
 REQUIRES_SCRAPE <- "depreciation/analyze_depreciation.Rmd"
 SCRAPE <- "depreciation/bilbasen_data.csv"
 
+in_ci <- identical(Sys.getenv("GITHUB_ACTIONS"), "true")
+
 filter <- commandArgs(trailingOnly = TRUE)
 docs <- normalizePath("docs", mustWork = TRUE)
 
@@ -37,10 +39,17 @@ for (note in NOTES) {
   if (length(filter) && !any(vapply(filter, grepl, logical(1), x = src, fixed = TRUE))) next
   if (src == REQUIRES_SCRAPE && !file.exists(SCRAPE)) {
     message("SKIP  ", src, " — needs ", SCRAPE, " (see NOTICE)")
+    # In CI, say so where it will be seen: an edit to this Rmd cannot reach
+    # the site until its render is rebuilt locally and committed.
+    if (in_ci) cat("::warning file=", src, "::Not rebuilt (raw scrape absent); ",
+                   "the site keeps the committed docs/", out, "\n", sep = "")
     next
   }
   message("BUILD ", src, " -> docs/", out)
-  rmarkdown::render(src, output_file = out, output_dir = docs, quiet = TRUE)
+  # Pin the HTML format: some notes also declare pdf_document, and render()
+  # otherwise picks whichever format is listed first.
+  rmarkdown::render(src, output_format = "html_document", output_file = out,
+                    output_dir = docs, quiet = TRUE)
 }
 
 message("\nDone. Open docs/index.html.")

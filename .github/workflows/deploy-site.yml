@@ -1,0 +1,78 @@
+# Render every note and publish docs/ to GitHub Pages on each push to main.
+#
+# Rendered HTML is a build output and is not committed, with one exception:
+# docs/depreciation-by-brand.html cannot be rebuilt here because its input, the
+# raw bilbasen scrape, is deliberately not distributed (see NOTICE). build.R
+# skips that note and flags it as a warning; the committed render is deployed.
+#
+# If any note fails to render, or a publishability check fails, nothing is
+# deployed and the site stays at the last good version.
+
+name: Build and deploy site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; let a running one finish rather than half-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Pinned, not ubuntu-latest: Posit's binary R packages track LTS releases,
+    # and building tidyverse from source would add many minutes per run.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the commit is publishable
+        run: tools/check-publishable.sh HEAD
+
+      # setup-r-dependencies only installs pandoc when it finds a DESCRIPTION
+      # file, and this repository is not an R package, so install it directly.
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.5.2'
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          # Explicit list: the default reads dependencies from a DESCRIPTION.
+          packages: |
+            any::rmarkdown
+            any::knitr
+            any::kableExtra
+            any::tidyverse
+            any::ggrepel
+            any::scales
+
+      - name: Render notes
+        run: Rscript build.R
+
+      - name: Check the rendered site is publishable
+        run: tools/check-publishable.sh --dir docs
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
